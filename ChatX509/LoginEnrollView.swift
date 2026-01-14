@@ -239,6 +239,12 @@ struct LoginEnrollView: View {
     private func performEnroll() {
         print("Enrolling: OU=\(organizationalUnit), CN=\(commonName)")
         CertificateManager.shared.startRotation(username: commonName)
+        
+        // Trigger immediate discovery announce
+        Task {
+            await UserDiscoveryService.shared.announceNow()
+        }
+        
         dismiss()
     }
 }

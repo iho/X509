@@ -17,7 +17,7 @@ struct ChatView: View {
     
     init(user: ChatUser) {
         self.user = user
-        _messageStore = StateObject(wrappedValue: ChatMessageStore(userId: user.id))
+        _messageStore = StateObject(wrappedValue: ChatMessageStore(userId: user.id, recipientName: user.name))
     }
     
     var body: some View {
@@ -199,6 +199,13 @@ struct MessageBubbleView: View {
                     .background(bubbleBackground)
                 
                 HStack(spacing: 4) {
+                    // Encryption indicator
+                    if message.isEncrypted {
+                        Image(systemName: "lock.fill")
+                            .font(.caption2)
+                            .foregroundColor(.green)
+                    }
+                    
                     Text(formatTime(message.timestamp))
                         .font(.caption2)
                         .foregroundColor(.gray)

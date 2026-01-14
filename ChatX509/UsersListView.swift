@@ -217,6 +217,24 @@ struct UserRowView: View {
                         .font(.headline)
                         .foregroundColor(.white)
                     
+                    // Discovered badge
+                    if user.isDiscovered {
+                        Text("Discovered")
+                            .font(.caption2)
+                            .foregroundColor(.green)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.green.opacity(0.2))
+                            .clipShape(Capsule())
+                    }
+                    
+                    // Encryption ready indicator
+                    if user.certificateData != nil {
+                        Image(systemName: "lock.fill")
+                            .font(.caption)
+                            .foregroundColor(.green)
+                    }
+                    
                     Spacer()
                     
                     if let date = user.lastMessageDate {

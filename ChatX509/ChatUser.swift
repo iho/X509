@@ -18,6 +18,11 @@ struct ChatUser: Identifiable, Codable, Hashable {
     var unreadCount: Int
     var isOnline: Bool
     
+    // New fields for CMS encryption and discovery
+    var certificateData: Data?  // DER-encoded X.509 certificate for encryption
+    var lastSeen: Date?         // Last time user was seen on network
+    var isDiscovered: Bool      // true = auto-discovered, false = manually added
+    
     init(
         id: UUID = UUID(),
         name: String,
@@ -25,7 +30,10 @@ struct ChatUser: Identifiable, Codable, Hashable {
         lastMessage: String? = nil,
         lastMessageDate: Date? = nil,
         unreadCount: Int = 0,
-        isOnline: Bool = false
+        isOnline: Bool = false,
+        certificateData: Data? = nil,
+        lastSeen: Date? = nil,
+        isDiscovered: Bool = false
     ) {
         self.id = id
         self.name = name
@@ -34,6 +42,9 @@ struct ChatUser: Identifiable, Codable, Hashable {
         self.lastMessageDate = lastMessageDate
         self.unreadCount = unreadCount
         self.isOnline = isOnline
+        self.certificateData = certificateData
+        self.lastSeen = lastSeen
+        self.isDiscovered = isDiscovered
     }
 }
 
@@ -51,6 +62,7 @@ final class ChatUserStore: ObservableObject {
         if users.isEmpty {
             seedDefaultUsers()
         }
+        startUserDiscovery()
     }
     
     func addUser(_ user: ChatUser) {
@@ -70,6 +82,72 @@ final class ChatUserStore: ObservableObject {
         }
     }
     
+    // MARK: - Discovery Methods
+    
+    /// Add or update a user discovered on the network
+    func addOrUpdateDiscoveredUser(name: String, certificateData: Data, isOnline: Bool) {
+        if let index = users.firstIndex(where: { $0.name == name }) {
+            // Update existing user
+            users[index].certificateData = certificateData
+            users[index].lastSeen = Date()
+            users[index].isOnline = isOnline
+            users[index].isDiscovered = true
+        } else {
+            // Add new discovered user
+            let newUser = ChatUser(
+                name: name,
+                certificateSubject: "CN=\(name)",
+                isOnline: isOnline,
+                certificateData: certificateData,
+                lastSeen: Date(),
+                isDiscovered: true
+            )
+            users.append(newUser)
+        }
+        saveUsers()
+    }
+    
+    /// Mark a user as offline
+    func markUserOffline(name: String) {
+        if let index = users.firstIndex(where: { $0.name == name }) {
+            users[index].isOnline = false
+            saveUsers()
+        }
+    }
+    
+    /// Get user by name
+    func getUserByName(_ name: String) -> ChatUser? {
+        return users.first { $0.name == name }
+    }
+    
+    /// Get certificate data for a user
+    func getCertificateData(for userName: String) -> Data? {
+        return users.first { $0.name == userName }?.certificateData
+    }
+    
+    // MARK: - Private Methods
+    
+    private func startUserDiscovery() {
+        Task {
+            await UserDiscoveryService.shared.start(
+                onUserDiscovered: { [weak self] discoveredUser in
+                    Task { @MainActor in
+                        self?.addOrUpdateDiscoveredUser(
+                            name: discoveredUser.username,
+                            certificateData: discoveredUser.certificateData,
+                            isOnline: discoveredUser.isOnline
+                        )
+                    }
+                },
+                onUserOffline: { [weak self] username in
+                    Task { @MainActor in
+                        self?.markUserOffline(name: username)
+                    }
+                }
+            )
+        }
+    }
+    
     private func saveUsers() {
         if let data = try? JSONEncoder().encode(users) {
             UserDefaults.standard.set(data, forKey: storageKey)
@@ -85,34 +163,10 @@ final class ChatUserStore: ObservableObject {
     }
     
     private func seedDefaultUsers() {
-        let seedUsers = [
-            ChatUser(
-                name: "Alice",
-                certificateSubject: "CN=alice,O=Chat509",
-                lastMessage: "Hey! Ready to chat securely? 🔒",
-                lastMessageDate: Date().addingTimeInterval(-300),
-                unreadCount: 2,
-                isOnline: true
-            ),
-            ChatUser(
-                name: "Bob",
-                certificateSubject: "CN=bob,O=Chat509",
-                lastMessage: "The certificates are verified ✓",
-                lastMessageDate: Date().addingTimeInterval(-3600),
-                unreadCount: 0,
-                isOnline: true
-            ),
-            ChatUser(
-                name: "Charlie",
-                certificateSubject: "CN=charlie,O=Chat509",
-                lastMessage: "Talk later!",
-                lastMessageDate: Date().addingTimeInterval(-86400),
-                unreadCount: 0,
-                isOnline: false
-            )
-        ]
-        
-        users = seedUsers
+        // No seed users - start with empty list
+        // Users will be discovered via network or added manually
+        users = []
         saveUsers()
     }
 }
+
