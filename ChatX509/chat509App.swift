@@ -1,14 +1,14 @@
 //
-//  ChatX509App.swift
-//  ChatX509
+//  chat509App.swift
+//  chat509
 //
-//  Created by Ihor Horobets on 15.01.2026.
+//  Created by Ihor Horobets on 24.12.2025.
 //
 
 import SwiftUI
 
 @main
-struct ChatX509App: App {
+struct chat509App: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
