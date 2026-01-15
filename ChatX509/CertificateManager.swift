@@ -21,6 +21,12 @@ final class CertificateManager: ObservableObject {
     @Published var username: String = ""
     
     private var rotationTimer: Timer?
+    private let usernameKey = "chatx509_username"
+    
+    /// Returns true if user has enrolled (username is saved)
+    var isEnrolled: Bool {
+        !username.isEmpty
+    }
     
     // OIDs
     private let oid_commonName: ASN1ObjectIdentifier = "2.5.4.3"
@@ -28,10 +34,20 @@ final class CertificateManager: ObservableObject {
     private let oid_secp256r1: ASN1ObjectIdentifier = "1.2.840.10045.3.1.7"
     private let oid_ecdsa_with_SHA256: ASN1ObjectIdentifier = "1.2.840.10045.4.3.2"
     
-    private init() {}
+    private init() {
+        // Load saved username on init
+        if let savedUsername = UserDefaults.standard.string(forKey: usernameKey), !savedUsername.isEmpty {
+            username = savedUsername
+            // Auto-generate identity for saved user
+            generateNewIdentity()
+        }
+    }
     
     func startRotation(username: String) {
         self.username = username
+        // Save username for next launch
+        UserDefaults.standard.set(username, forKey: usernameKey)
+        
         generateNewIdentity()
         
         // Schedule rotation every 30 minutes (1800 seconds)
@@ -124,6 +140,11 @@ final class CertificateManager: ObservableObject {
                 self.currentPrivateKey = privateKey
                 self.currentCertificate = cert
                 print("New identity generated successfully. Expiry: \(expiry)")
+                
+                // Trigger discovery announce after identity is ready
+                Task {
+                    await UserDiscoveryService.shared.announceNow()
+                }
             }
             
         } catch {

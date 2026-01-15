@@ -82,6 +82,14 @@ final class ChatUserStore: ObservableObject {
         }
     }
     
+    /// Mark a user's messages as read (clear unread count)
+    func markAsRead(_ user: ChatUser) {
+        if let index = users.firstIndex(where: { $0.id == user.id }) {
+            users[index].unreadCount = 0
+            saveUsers()
+        }
+    }
+    
     // MARK: - Discovery Methods
     
     /// Add or update a user discovered on the network

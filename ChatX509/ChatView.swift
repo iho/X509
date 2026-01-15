@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import SwiftASN1
 
 struct ChatView: View {
     let user: ChatUser
@@ -13,6 +14,8 @@ struct ChatView: View {
     @StateObject private var messageStore: ChatMessageStore
     @State private var messageText: String = ""
     @State private var scrollProxy: ScrollViewProxy?
+    @State private var showDeleteConfirmation = false
+    @State private var showCertificateSheet = false
     @FocusState private var isInputFocused: Bool
     
     init(user: ChatUser) {
@@ -49,6 +52,13 @@ struct ChatView: View {
         #if os(macOS)
         .toolbarBackground(.ultraThinMaterial, for: .windowToolbar)
         #endif
+        .onAppear {
+            // Mark messages as read when opening chat
+            ChatUserStore.shared.markAsRead(user)
+        }
+        .sheet(isPresented: $showCertificateSheet) {
+            CertificateDetailSheet(user: user)
+        }
         // .toolbarColorScheme(.dark, for: .navigationBar) // unavailable on macOS
     }
     
@@ -158,11 +168,32 @@ struct ChatView: View {
     }
     
     private var moreButton: some View {
-        Button(action: { /* TODO */ }) {
+        Menu {
+            Button(role: .destructive, action: { showDeleteConfirmation = true }) {
+                Label("Delete Chat", systemImage: "trash")
+            }
+            
+            Button(action: { showCertificateSheet = true }) {
+                Label("View Certificate", systemImage: "checkmark.shield")
+            }
+        } label: {
             Image(systemName: "ellipsis.circle")
                 .font(.title3)
                 .foregroundColor(.gray)
         }
+        .confirmationDialog("Delete this chat?", isPresented: $showDeleteConfirmation, titleVisibility: .visible) {
+            Button("Delete Chat", role: .destructive) {
+                deleteChat()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This will remove \(user.name) from your contacts and delete all messages.")
+        }
+    }
+    
+    private func deleteChat() {
+        ChatUserStore.shared.removeUser(user)
+        dismiss()
     }
     
     // MARK: - Actions
@@ -327,5 +358,152 @@ struct BubbleShape: Shape {
             certificateSubject: "CN=alice",
             isOnline: true
         ))
+    }
+}
+
+// MARK: - Certificate Detail Sheet
+
+struct CertificateDetailSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let user: ChatUser
+    
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                Color(red: 0.05, green: 0.05, blue: 0.12)
+                    .ignoresSafeArea()
+                
+                ScrollView {
+                    VStack(spacing: 24) {
+                        // Icon
+                        ZStack {
+                            Circle()
+                                .fill(LinearGradient(colors: [.green.opacity(0.3), .blue.opacity(0.3)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                                .frame(width: 80, height: 80)
+                            
+                            Image(systemName: "checkmark.shield.fill")
+                                .font(.system(size: 36))
+                                .foregroundColor(.green)
+                        }
+                        .padding(.top, 20)
+                        
+                        // User Info
+                        VStack(spacing: 8) {
+                            Text(user.name)
+                                .font(.title2.bold())
+                                .foregroundColor(.white)
+                            
+                            Text(user.certificateSubject)
+                                .font(.subheadline)
+                                .foregroundColor(.gray)
+                        }
+                        
+                        // Certificate Status
+                        VStack(spacing: 16) {
+                            certificateRow(title: "Status", value: user.certificateData != nil ? "Valid" : "Not Available", isPositive: user.certificateData != nil)
+                            
+                            certificateRow(title: "Encryption", value: user.certificateData != nil ? "Ready" : "Not Available", isPositive: user.certificateData != nil)
+                            
+                            if user.isDiscovered {
+                                certificateRow(title: "Discovery", value: "Auto-discovered", isPositive: true)
+                            }
+                            
+                            if let lastSeen = user.lastSeen {
+                                certificateRow(title: "Last Seen", value: formatDate(lastSeen), isPositive: nil)
+                            }
+                        }
+                        .padding()
+                        .background(Color.white.opacity(0.05))
+                        .clipShape(RoundedRectangle(cornerRadius: 16))
+                        .padding(.horizontal)
+                        
+                        // Serial Number and Public Key
+                        if let certData = user.certificateData {
+                            VStack(spacing: 16) {
+                                certificateDataRow(
+                                    title: "Serial Number",
+                                    data: extractSerialNumber(from: certData)
+                                )
+                                
+                                certificateDataRow(
+                                    title: "Public Key",
+                                    data: extractPublicKey(from: certData)
+                                )
+                            }
+                            .padding()
+                            .background(Color.white.opacity(0.05))
+                            .clipShape(RoundedRectangle(cornerRadius: 16))
+                            .padding(.horizontal)
+                        }
+                    }
+                    .padding(.bottom, 40)
+                }
+            }
+            .navigationTitle("Certificate")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+    }
+    
+    private func certificateRow(title: String, value: String, isPositive: Bool?) -> some View {
+        HStack {
+            Text(title)
+                .foregroundColor(.gray)
+            Spacer()
+            HStack(spacing: 6) {
+                if let positive = isPositive {
+                    Image(systemName: positive ? "checkmark.circle.fill" : "xmark.circle.fill")
+                        .foregroundColor(positive ? .green : .red)
+                        .font(.caption)
+                }
+                Text(value)
+                    .foregroundColor(.white)
+            }
+        }
+    }
+    
+    private func certificateDataRow(title: String, data: Data) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.subheadline)
+                .foregroundColor(.gray)
+            
+            Text(data.prefix(16).map { String(format: "%02X", $0) }.joined(separator: " "))
+                .font(.system(.caption, design: .monospaced))
+                .foregroundColor(.white)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+    
+    private func extractSerialNumber(from certData: Data) -> Data {
+        // Parse X.509 certificate to extract serial number
+        do {
+            let certificate = try AuthenticationFramework_Certificate(derEncoded: ArraySlice(certData))
+            let serialBytes = Array(certificate.toBeSigned.serialNumber)
+            return Data(serialBytes.prefix(16))
+        } catch {
+            return Data(certData.prefix(16))
+        }
+    }
+    
+    private func extractPublicKey(from certData: Data) -> Data {
+        // Parse X.509 certificate to extract public key
+        do {
+            let certificate = try AuthenticationFramework_Certificate(derEncoded: ArraySlice(certData))
+            let pubKeyBytes = certificate.toBeSigned.subjectPublicKeyInfo.subjectPublicKey.bytes
+            return Data(pubKeyBytes.prefix(16))
+        } catch {
+            return Data(certData.suffix(16))
+        }
+    }
+    
+    private func formatDate(_ date: Date) -> String {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .abbreviated
+        return formatter.localizedString(for: date, relativeTo: Date())
     }
 }

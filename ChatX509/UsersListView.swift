@@ -34,15 +34,23 @@ struct UsersListView: View {
                 )
                 .ignoresSafeArea()
                 
-                if userStore.users.isEmpty {
-                    emptyStateView
-                } else {
-                    userListContent
+                VStack(spacing: 0) {
+                    // Identity header
+                    identityHeader
+                    
+                    if userStore.users.isEmpty {
+                        emptyStateView
+                    } else {
+                        userListContent
+                    }
                 }
             }
             .navigationTitle("Chats")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.large)
+            .toolbarColorScheme(.dark, for: .navigationBar)
+            .toolbarBackground(Color(red: 0.1, green: 0.1, blue: 0.2), for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
             #endif
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
@@ -55,7 +63,6 @@ struct UsersListView: View {
             #if os(macOS)
             .toolbarBackground(.ultraThinMaterial, for: .windowToolbar)
             #endif
-            // .toolbarColorScheme(.dark, for: .navigationBar) // navigationBar unavailable on macOS
         }
         .sheet(item: $activeSheet) { sheet in
             switch sheet {
@@ -67,6 +74,48 @@ struct UsersListView: View {
                 LogoutRevokeView()
             }
         }
+    }
+    
+    // MARK: - Identity Header
+    private var identityHeader: some View {
+        HStack(spacing: 12) {
+            // Certificate icon
+            ZStack {
+                Circle()
+                    .fill(LinearGradient(colors: [.blue.opacity(0.3), .purple.opacity(0.3)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                    .frame(width: 40, height: 40)
+                
+                Image(systemName: "person.badge.shield.checkmark.fill")
+                    .foregroundColor(.green)
+                    .font(.system(size: 18))
+            }
+            
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Signed in as")
+                    .font(.caption)
+                    .foregroundColor(.gray)
+                
+                Text(CertificateManager.shared.username.isEmpty ? "Not enrolled" : CertificateManager.shared.username)
+                    .font(.headline)
+                    .foregroundColor(.white)
+            }
+            
+            Spacer()
+            
+            // Certificate status
+            if CertificateManager.shared.currentCertificate != nil {
+                Label("Valid", systemImage: "checkmark.seal.fill")
+                    .font(.caption)
+                    .foregroundColor(.green)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.green.opacity(0.2))
+                    .clipShape(Capsule())
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(Color.white.opacity(0.05))
     }
     
     // MARK: - Empty State
@@ -122,7 +171,7 @@ struct UsersListView: View {
     private var userListContent: some View {
         ScrollView {
             LazyVStack(spacing: 2) {
-                ForEach(userStore.users) { user in
+                ForEach(sortedUsers) { user in
                     NavigationLink(destination: ChatView(user: user)) {
                         UserRowView(user: user)
                     }
@@ -130,6 +179,24 @@ struct UsersListView: View {
                 }
             }
             .padding(.top, 8)
+        }
+    }
+    
+    /// Users sorted by most recent message first, then by online status
+    private var sortedUsers: [ChatUser] {
+        userStore.users.sorted { a, b in
+            // First by last message date (most recent first)
+            if let dateA = a.lastMessageDate, let dateB = b.lastMessageDate {
+                return dateA > dateB
+            }
+            // Users with messages come before those without
+            if a.lastMessageDate != nil && b.lastMessageDate == nil { return true }
+            if a.lastMessageDate == nil && b.lastMessageDate != nil { return false }
+            // Then by online status
+            if a.isOnline && !b.isOnline { return true }
+            if !a.isOnline && b.isOnline { return false }
+            // Finally alphabetically
+            return a.name < b.name
         }
     }
     

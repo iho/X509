@@ -14,8 +14,17 @@ enum AppScreen {
 }
 
 struct ContentView: View {
-    @State private var currentScreen: AppScreen = .setup
+    @State private var currentScreen: AppScreen
     @State private var connectionError: String?
+    
+    init() {
+        // Check if user is already enrolled - skip setup if so
+        if CertificateManager.shared.isEnrolled {
+            _currentScreen = State(initialValue: .chat)
+        } else {
+            _currentScreen = State(initialValue: .setup)
+        }
+    }
     
     var body: some View {
         ZStack {

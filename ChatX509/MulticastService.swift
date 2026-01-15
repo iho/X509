@@ -21,13 +21,30 @@ actor MulticastService {
     private var isRunning = false
     private var socketFD: Int32 = -1
     
-    // Message Stream
-    private var dataContinuation: AsyncStream<Data>.Continuation?
+    // Support multiple stream consumers
+    private var continuations: [UUID: AsyncStream<Data>.Continuation] = [:]
     
+    /// Returns a new stream for receiving data. Each caller gets their own stream.
     var dataStream: AsyncStream<Data> {
-        AsyncStream { continuation in
-            self.dataContinuation = continuation
+        let id = UUID()
+        return AsyncStream { [weak self] continuation in
+            Task {
+                await self?.addContinuation(id: id, continuation: continuation)
+            }
+            continuation.onTermination = { _ in
+                Task {
+                    await self?.removeContinuation(id: id)
+                }
+            }
         }
+    }
+    
+    private func addContinuation(id: UUID, continuation: AsyncStream<Data>.Continuation) {
+        continuations[id] = continuation
+    }
+    
+    private func removeContinuation(id: UUID) {
+        continuations.removeValue(forKey: id)
     }
     
     private init() {}
@@ -165,6 +182,8 @@ actor MulticastService {
     }
     
     private func publishData(_ data: Data) {
-        dataContinuation?.yield(data)
+        for (_, continuation) in continuations {
+            continuation.yield(data)
+        }
     }
 }

@@ -355,5 +355,28 @@ final class ChatMessageStore: ObservableObject {
         }
         messages = decoded
     }
+    
+    // MARK: - Static Message Storage (for GlobalMessageService)
+    
+    /// Save a message to a user's chat storage (called from GlobalMessageService)
+    static func saveMessageToChat(userId: UUID, message: ChatMessage) {
+        let storageKey = "messages_\(userId.uuidString)"
+        var messages: [ChatMessage] = []
+        
+        // Load existing
+        if let data = UserDefaults.standard.data(forKey: storageKey),
+           let decoded = try? JSONDecoder().decode([ChatMessage].self, from: data) {
+            messages = decoded
+        }
+        
+        // Append new message if not duplicate
+        if !messages.contains(where: { $0.id == message.id }) {
+            messages.append(message)
+        }
+        
+        // Save
+        if let data = try? JSONEncoder().encode(messages) {
+            UserDefaults.standard.set(data, forKey: storageKey)
+        }
+    }
 }
-
