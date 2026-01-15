@@ -6,11 +6,22 @@
 //
 
 import SwiftUI
+import UniformTypeIdentifiers
+import CryptoKit
+import SwiftASN1
 
 struct UsersListView: View {
     @StateObject private var userStore = ChatUserStore.shared
+    @ObservedObject private var certificateManager = CertificateManager.shared
     @State private var activeSheet: ActiveSheet?
     @State private var selectedUser: ChatUser?
+    @State private var showKeyExporter = false
+    @State private var exportKeyData: Data?
+    @State private var keyOperationMessage: String?
+    @State private var showOwnCertificate = false
+    @State private var showExpirationAlert = false
+    @State private var showDeleteAllConfirmation = false
+    @State private var userToDelete: ChatUser?
     
     enum ActiveSheet: Identifiable {
         case addUser
@@ -60,6 +71,36 @@ struct UsersListView: View {
                     settingsMenu
                 }
             }
+            .alert("Identity Expired", isPresented: $showExpirationAlert) {
+                Button("Regenerate", role: .destructive) {
+                    CertificateManager.shared.generateNewIdentity()
+                }
+                Button("Cancel", role: .cancel) { }
+            } message: {
+                Text("Your identity has expired. Other users won't be able to send you encrypted messages until you regenerate your certificate.")
+            }
+            .onReceive(CertificateManager.shared.$isExpired) { expired in
+                if expired { showExpirationAlert = true }
+            }
+            .alert("Delete Chat?", isPresented: .init(
+                get: { userToDelete != nil },
+                set: { if !$0 { userToDelete = nil } }
+            ), presenting: userToDelete) { user in
+                Button("Cancel", role: .cancel) { }
+                Button("Delete", role: .destructive) {
+                    userStore.removeUser(user)
+                }
+            } message: { user in
+                Text("Are you sure you want to delete the chat history with \(user.name)? This action cannot be undone.")
+            }
+            .alert("Delete All Messages?", isPresented: $showDeleteAllConfirmation) {
+                Button("Cancel", role: .cancel) { }
+                Button("Delete All", role: .destructive) {
+                    userStore.clearAllMessages()
+                }
+            } message: {
+                Text("This will wipe all chat history with all users. Your contacts will remain, but all messages will be deleted.")
+            }
             #if os(macOS)
             .toolbarBackground(.ultraThinMaterial, for: .windowToolbar)
             #endif
@@ -74,48 +115,66 @@ struct UsersListView: View {
                 LogoutRevokeView()
             }
         }
+        .sheet(isPresented: $showOwnCertificate) {
+            if let cert = CertificateManager.shared.currentCertificate {
+                OwnCertificateSheet(certificate: cert)
+            }
+        }
     }
     
     // MARK: - Identity Header
     private var identityHeader: some View {
-        HStack(spacing: 12) {
-            // Certificate icon
-            ZStack {
-                Circle()
-                    .fill(LinearGradient(colors: [.blue.opacity(0.3), .purple.opacity(0.3)], startPoint: .topLeading, endPoint: .bottomTrailing))
-                    .frame(width: 40, height: 40)
+        Button(action: { showOwnCertificate = true }) {
+            HStack(spacing: 12) {
+                // Certificate icon
+                ZStack {
+                    Circle()
+                        .fill(LinearGradient(colors: [.blue.opacity(0.3), .purple.opacity(0.3)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                        .frame(width: 40, height: 40)
+                    
+                    Image(systemName: "person.badge.shield.checkmark.fill")
+                        .foregroundColor(CertificateManager.shared.isExpired ? .red : .green)
+                        .font(.system(size: 18))
+                }
                 
-                Image(systemName: "person.badge.shield.checkmark.fill")
-                    .foregroundColor(.green)
-                    .font(.system(size: 18))
-            }
-            
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Signed in as")
-                    .font(.caption)
-                    .foregroundColor(.gray)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Signed in as")
+                        .font(.caption)
+                        .foregroundColor(.gray)
+                    
+                    Text(CertificateManager.shared.username.isEmpty ? "Not enrolled" : CertificateManager.shared.username)
+                        .font(.headline)
+                        .foregroundColor(.white)
+                }
                 
-                Text(CertificateManager.shared.username.isEmpty ? "Not enrolled" : CertificateManager.shared.username)
-                    .font(.headline)
-                    .foregroundColor(.white)
+                Spacer()
+                
+                // Certificate status
+                if CertificateManager.shared.currentCertificate != nil {
+                    if CertificateManager.shared.isExpired {
+                        Label("Expired", systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption)
+                            .foregroundColor(.red)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Color.red.opacity(0.2))
+                            .clipShape(Capsule())
+                    } else {
+                        Label("Valid", systemImage: "checkmark.seal.fill")
+                            .font(.caption)
+                            .foregroundColor(.green)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Color.green.opacity(0.2))
+                            .clipShape(Capsule())
+                    }
+                }
             }
-            
-            Spacer()
-            
-            // Certificate status
-            if CertificateManager.shared.currentCertificate != nil {
-                Label("Valid", systemImage: "checkmark.seal.fill")
-                    .font(.caption)
-                    .foregroundColor(.green)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Color.green.opacity(0.2))
-                    .clipShape(Capsule())
-            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .background(Color.white.opacity(0.05))
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-        .background(Color.white.opacity(0.05))
+        .buttonStyle(.plain)
     }
     
     // MARK: - Empty State
@@ -169,17 +228,30 @@ struct UsersListView: View {
     
     // MARK: - User List
     private var userListContent: some View {
-        ScrollView {
-            LazyVStack(spacing: 2) {
-                ForEach(sortedUsers) { user in
+        List {
+            ForEach(sortedUsers) { user in
+                ZStack {
                     NavigationLink(destination: ChatView(user: user)) {
-                        UserRowView(user: user)
+                        EmptyView()
                     }
-                    .buttonStyle(.plain)
+                    .opacity(0)
+                    
+                    UserRowView(user: user)
+                }
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+                .listRowInsets(EdgeInsets(top: 1, leading: 0, bottom: 1, trailing: 0))
+                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                    Button(role: .destructive) {
+                        userToDelete = user
+                    } label: {
+                        Label("Delete", systemImage: "trash.fill")
+                    }
                 }
             }
-            .padding(.top, 8)
         }
+        .listStyle(.plain)
+        .padding(.top, 8)
     }
     
     /// Users sorted by most recent message first, then by online status
@@ -225,13 +297,28 @@ struct UsersListView: View {
                 Label("Logout / Revoke", systemImage: "rectangle.portrait.and.arrow.right")
             }
             
+            Divider()
+            
+            Button(action: exportPrivateKey) {
+                Label("Export Identity", systemImage: "square.and.arrow.up")
+            }
+            .disabled(CertificateManager.shared.currentPrivateKey == nil)
+            
+            Divider()
+            
+            Button(role: .destructive, action: { showDeleteAllConfirmation = true }) {
+                Label("Delete All Messages", systemImage: "trash.slash")
+            }
+            
+            Divider()
+            
             Button(action: { /* Search TODO */ }) {
                 Label("Search", systemImage: "magnifyingglass")
             }
             
             Divider()
             
-            Button(role: .destructive, action: { /* Quit TODO */ exit(0) }) {
+            Button(role: .destructive, action: { exit(0) }) {
                 Label("Quit Chat", systemImage: "power")
             }
         } label: {
@@ -239,6 +326,121 @@ struct UsersListView: View {
                 .font(.body)
                 .foregroundColor(.gray)
         }
+        .fileExporter(
+            isPresented: $showKeyExporter,
+            document: KeyDocument(data: exportKeyData ?? Data()),
+            contentType: .data,
+            defaultFilename: "my_identity.p12"
+        ) { result in
+            handleKeyExport(result)
+        }
+        .alert("Key Operation", isPresented: .init(
+            get: { keyOperationMessage != nil },
+            set: { if !$0 { keyOperationMessage = nil } }
+        )) {
+            Button("OK") { keyOperationMessage = nil }
+        } message: {
+            Text(keyOperationMessage ?? "")
+        }
+    }
+    
+    private func exportPrivateKey() {
+        guard let bundle = CertificateManager.shared.exportIdentity() else {
+            keyOperationMessage = "No identity available to export"
+            return
+        }
+        exportKeyData = bundle
+        showKeyExporter = true
+    }
+    
+    private func handleKeyImport(_ result: Result<[URL], Error>) {
+        switch result {
+        case .success(let urls):
+            guard let url = urls.first else { return }
+            guard url.startAccessingSecurityScopedResource() else {
+                keyOperationMessage = "Cannot access file"
+                return
+            }
+            defer { url.stopAccessingSecurityScopedResource() }
+            
+            do {
+                let bundleData = try Data(contentsOf: url)
+                
+                // Try full identity bundle first
+                // Now throwing, so we catch specific errors
+                do {
+                    try CertificateManager.shared.importIdentity(bundleData)
+                    keyOperationMessage = "Identity imported successfully (key + certificate)"
+                    return
+                } catch let error as CertificateImportError {
+                    // Start of P12 or format error
+                    if error.localizedDescription.contains("Standard .p12") {
+                        keyOperationMessage = error.localizedDescription
+                        return
+                    }
+                    // Continue to fallback if just sizes didn't match, 
+                    // BUT detecting standard P12 should be terminal to warn user.
+                    if case .standardP12NotSupported = error {
+                        keyOperationMessage = error.localizedDescription
+                        return
+                    }
+                    
+                    // If it's just invalid size, we fall through to try as raw key
+                } catch {
+                    // Generic error
+                    print("Bundle import failed: \(error)")
+                }
+
+                // Fallback to raw key (32 bytes)
+                if bundleData.count == 32 {
+                    let privateKey = try P256.Signing.PrivateKey(rawRepresentation: bundleData)
+                    CertificateManager.shared.importPrivateKey(privateKey)
+                    keyOperationMessage = "Private key imported (new certificate generated)"
+                } else {
+                    // Since importIdentity throws detailed errors now, we can be more specific
+                    // Re-run import to get the specific error if possible, or just default
+                    // But simpler: just say it failed format checks
+                    if bundleData.count > 2 && bundleData[0] == 0x30 {
+                         keyOperationMessage = "Standard .p12 files are not supported. Please use ChatX509 export."
+                    } else {
+                        keyOperationMessage = "Invalid format. Expected identity bundle or 32-byte key."
+                    }
+                }
+            } catch {
+                keyOperationMessage = "Import failed: \(error.localizedDescription)"
+            }
+            
+        case .failure(let error):
+            keyOperationMessage = "Import failed: \(error.localizedDescription)"
+        }
+    }
+    
+    private func handleKeyExport(_ result: Result<URL, Error>) {
+        switch result {
+        case .success:
+            keyOperationMessage = "Identity exported successfully"
+        case .failure(let error):
+            keyOperationMessage = "Export failed: \(error.localizedDescription)"
+        }
+    }
+}
+
+// MARK: - Key Document for FileExporter
+struct KeyDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.data] }
+    
+    var data: Data
+    
+    init(data: Data) {
+        self.data = data
+    }
+    
+    init(configuration: ReadConfiguration) throws {
+        self.data = configuration.file.regularFileContents ?? Data()
+    }
+    
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        return FileWrapper(regularFileWithContents: data)
     }
 }
 
@@ -280,7 +482,7 @@ struct UserRowView: View {
             // User info
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
-                    Text(user.name)
+                    Text(userDisplayTitle)
                         .font(.headline)
                         .foregroundColor(.white)
                     
@@ -343,6 +545,17 @@ struct UserRowView: View {
         .contentShape(Rectangle())
     }
     
+    private var userDisplayTitle: String {
+        let sameNameUsers = ChatUserStore.shared.users.filter { $0.name == user.name }
+        if sameNameUsers.count > 1 {
+            if let serial = user.serialNumber {
+                let serialHex = serial.prefix(4).map { String(format: "%02X", $0) }.joined()
+                return "\(user.name) (#\(serialHex))"
+            }
+        }
+        return user.name
+    }
+    
     private var avatarColors: [Color] {
         let colorSets: [[Color]] = [
             [.blue, .purple],
@@ -373,4 +586,154 @@ struct UserRowView: View {
 
 #Preview {
     UsersListView()
+}
+
+// MARK: - Own Certificate Sheet
+
+struct OwnCertificateSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let certificate: AuthenticationFramework_Certificate
+    
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                Color(red: 0.05, green: 0.05, blue: 0.12)
+                    .ignoresSafeArea()
+                
+                ScrollView {
+                    VStack(spacing: 24) {
+                        // Icon
+                        ZStack {
+                            Circle()
+                                .fill(LinearGradient(colors: [.blue.opacity(0.3), .purple.opacity(0.3)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                                .frame(width: 80, height: 80)
+                            
+                            Image(systemName: "person.badge.shield.checkmark.fill")
+                                .font(.system(size: 36))
+                                .foregroundColor(CertificateManager.shared.isExpired ? .red : .green)
+                        }
+                        .padding(.top, 20)
+                        
+                        // User Info
+                        VStack(spacing: 8) {
+                            Text(CertificateManager.shared.username)
+                                .font(.title2.bold())
+                                .foregroundColor(.white)
+                            
+                            Text("Your secure identity")
+                                .font(.subheadline)
+                                .foregroundColor(.white.opacity(0.8))
+                        }
+                        
+                        // Certificate Status
+                        VStack(spacing: 16) {
+                            // Valid/Expired Status
+                            certificateRow(title: "Status", value: CertificateManager.shared.isExpired ? "Expired" : "Valid", isPositive: !CertificateManager.shared.isExpired)
+                            
+                            if let expiry = CertificateManager.shared.expirationDate {
+                                certificateRow(title: "Expires", value: formatDate(expiry), isPositive: nil)
+                            }
+                            
+                            certificateRow(title: "Type", value: CertificateManager.shared.isImportedKey ? "Imported (Permanent)" : "Auto-generated (30m)", isPositive: nil)
+                            
+                            // Detailed Subject Info
+                            if !CertificateManager.shared.certificateSubjectDetails.isEmpty {
+                                Divider().background(Color.white.opacity(0.1))
+                                
+                                ForEach(Array(CertificateManager.shared.certificateSubjectDetails.keys.sorted()), id: \.self) { key in
+                                    if let value = CertificateManager.shared.certificateSubjectDetails[key] {
+                                        certificateRow(title: key, value: value, isPositive: nil)
+                                    }
+                                }
+                            }
+                        }
+                        .padding()
+                        .background(Color.white.opacity(0.05))
+                        .clipShape(RoundedRectangle(cornerRadius: 16))
+                        .padding(.horizontal)
+                        
+                        // Serial Number and Public Key
+                        VStack(spacing: 16) {
+                            certificateDataRow(
+                                title: "Serial Number",
+                                data: Data(certificate.toBeSigned.serialNumber)
+                            )
+                            
+                            certificateDataRow(
+                                title: "Public Key",
+                                data: Data(certificate.toBeSigned.subjectPublicKeyInfo.subjectPublicKey.bytes)
+                            )
+                        }
+                        .padding()
+                        .background(Color.white.opacity(0.05))
+                        .clipShape(RoundedRectangle(cornerRadius: 16))
+                        .padding(.horizontal)
+                        
+                        if CertificateManager.shared.isExpired {
+                            Button(action: { 
+                                CertificateManager.shared.generateNewIdentity()
+                                dismiss()
+                            }) {
+                                Label("Regenerate Identity", systemImage: "arrow.clockwise.circle.fill")
+                                    .font(.headline)
+                                    .foregroundColor(.white)
+                                    .padding(.horizontal, 24)
+                                    .padding(.vertical, 14)
+                                    .background(Color.blue)
+                                    .clipShape(Capsule())
+                            }
+                            .padding(.top, 10)
+                        }
+                    }
+                    .padding(.bottom, 40)
+                }
+            }
+            .navigationTitle("Your Identity")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarColorScheme(.dark, for: .navigationBar)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                        .foregroundColor(.white)
+                }
+            }
+        }
+    }
+    
+    private func certificateRow(title: String, value: String, isPositive: Bool?) -> some View {
+        HStack {
+            Text(title)
+                .foregroundColor(.gray)
+            Spacer()
+            HStack(spacing: 6) {
+                if let positive = isPositive {
+                    Image(systemName: positive ? "checkmark.circle.fill" : "xmark.circle.fill")
+                        .foregroundColor(positive ? .green : .red)
+                        .font(.caption)
+                }
+                Text(value)
+                    .foregroundColor(.white)
+            }
+        }
+    }
+    
+    private func certificateDataRow(title: String, data: Data) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.subheadline)
+                .foregroundColor(.gray)
+            
+            Text(data.prefix(16).map { String(format: "%02X", $0) }.joined(separator: " "))
+                .font(.system(.caption, design: .monospaced))
+                .foregroundColor(.white)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+    
+    private func formatDate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        return formatter.string(from: date)
+    }
 }

@@ -222,18 +222,38 @@ struct LoginEnrollView: View {
         switch result {
         case .success(let urls):
             guard let url = urls.first else { return }
-            // In a real app, we'd validate/import here.
-            // For now, just show the name.
+            guard url.startAccessingSecurityScopedResource() else {
+                 errorMessage = "Failed to access file"
+                 return
+            }
+            defer { url.stopAccessingSecurityScopedResource() }
+            
             selectedFileName = url.lastPathComponent
+            
+            // Auto-load for better UX
+            do {
+                let data = try Data(contentsOf: url)
+                do {
+                    try CertificateManager.shared.importIdentity(data)
+                    NotificationCenter.default.post(name: .userDidConnect, object: nil)
+                    dismiss()
+                } catch {
+                    errorMessage = error.localizedDescription
+                }
+            } catch {
+                errorMessage = "Failed to read file: \(error.localizedDescription)"
+            }
+            
         case .failure(let error):
             errorMessage = error.localizedDescription
         }
     }
     
     private func performLoad() {
-        // TODO: Implement actual loading logic
-        print("Loading certificate: \(selectedFileName ?? "none")")
-        dismiss()
+        // Handled by handleFileSelection now
+        if selectedFileName != nil && errorMessage == nil {
+             dismiss()
+        }
     }
     
     private func performEnroll() {
@@ -245,6 +265,7 @@ struct LoginEnrollView: View {
             await UserDiscoveryService.shared.announceNow()
         }
         
+        NotificationCenter.default.post(name: .userDidConnect, object: nil)
         dismiss()
     }
 }

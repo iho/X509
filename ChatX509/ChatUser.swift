@@ -20,6 +20,7 @@ struct ChatUser: Identifiable, Codable, Hashable {
     
     // New fields for CMS encryption and discovery
     var certificateData: Data?  // DER-encoded X.509 certificate for encryption
+    var serialNumber: Data?     // Certificate serial number for unique identification
     var lastSeen: Date?         // Last time user was seen on network
     var isDiscovered: Bool      // true = auto-discovered, false = manually added
     
@@ -32,6 +33,7 @@ struct ChatUser: Identifiable, Codable, Hashable {
         unreadCount: Int = 0,
         isOnline: Bool = false,
         certificateData: Data? = nil,
+        serialNumber: Data? = nil,
         lastSeen: Date? = nil,
         isDiscovered: Bool = false
     ) {
@@ -43,6 +45,7 @@ struct ChatUser: Identifiable, Codable, Hashable {
         self.unreadCount = unreadCount
         self.isOnline = isOnline
         self.certificateData = certificateData
+        self.serialNumber = serialNumber
         self.lastSeen = lastSeen
         self.isDiscovered = isDiscovered
     }
@@ -90,23 +93,76 @@ final class ChatUserStore: ObservableObject {
         }
     }
     
+    /// Clear all users AND their messages
+    func clearAll() {
+        clearAllMessages()
+        users.removeAll()
+        UserDefaults.standard.removeObject(forKey: storageKey)
+        print("All users and messages cleared")
+    }
+    
+    /// Clear messages for ALL users but keep the users list
+    func clearAllMessages() {
+        objectWillChange.send() // Force UI update
+        for user in users {
+            removeMessages(for: user)
+        }
+        // Update user previews
+        for i in 0..<users.count {
+            users[i].lastMessage = nil
+            users[i].lastMessageDate = nil
+            users[i].unreadCount = 0
+        }
+        saveUsers()
+        print("All chat messages cleared")
+    }
+    
+    /// Remove a single chat (messages only)
+    func clearMessages(for user: ChatUser) {
+        removeMessages(for: user)
+        if let index = users.firstIndex(where: { $0.id == user.id }) {
+            users[index].lastMessage = nil
+            users[index].lastMessageDate = nil
+            users[index].unreadCount = 0
+            saveUsers()
+        }
+    }
+    
+    private func removeMessages(for user: ChatUser) {
+        let messageKey = "messages_\(user.id.uuidString)"
+        UserDefaults.standard.removeObject(forKey: messageKey)
+    }
+    
     // MARK: - Discovery Methods
     
     /// Add or update a user discovered on the network
-    func addOrUpdateDiscoveredUser(name: String, certificateData: Data, isOnline: Bool) {
-        if let index = users.firstIndex(where: { $0.name == name }) {
-            // Update existing user
+    /// Add or update a user discovered on the network
+    func addOrUpdateDiscoveredUser(name: String, certificateData: Data, serialNumber: Data, isOnline: Bool) {
+        // 1. Try to find by serial number (exact identity match)
+        if let index = users.firstIndex(where: { $0.serialNumber == serialNumber }) {
+            users[index].name = name
             users[index].certificateData = certificateData
             users[index].lastSeen = Date()
             users[index].isOnline = isOnline
             users[index].isDiscovered = true
-        } else {
-            // Add new discovered user
+        } 
+        // 2. Try to find by name (identity rotation/regeneration case)
+        else if let index = users.firstIndex(where: { $0.name == name }) {
+            print("User '\(name)' rotated identity (new serial). Updating credentials.")
+            users[index].serialNumber = serialNumber
+            users[index].certificateData = certificateData
+            users[index].lastSeen = Date()
+            users[index].isOnline = isOnline
+            // Keep existing messages/history
+        }
+        // 3. New user
+        else {
             let newUser = ChatUser(
                 name: name,
                 certificateSubject: "CN=\(name)",
                 isOnline: isOnline,
                 certificateData: certificateData,
+                serialNumber: serialNumber,
                 lastSeen: Date(),
                 isDiscovered: true
             )
@@ -115,7 +171,15 @@ final class ChatUserStore: ObservableObject {
         saveUsers()
     }
     
-    /// Mark a user as offline
+    /// Mark a user as offline by serial number
+    func markUserOffline(serialNumber: Data) {
+        if let index = users.firstIndex(where: { $0.serialNumber == serialNumber }) {
+            users[index].isOnline = false
+            saveUsers()
+        }
+    }
+    
+    /// Legacy: Mark a user as offline by name (if serial unknown)
     func markUserOffline(name: String) {
         if let index = users.firstIndex(where: { $0.name == name }) {
             users[index].isOnline = false
@@ -143,13 +207,18 @@ final class ChatUserStore: ObservableObject {
                         self?.addOrUpdateDiscoveredUser(
                             name: discoveredUser.username,
                             certificateData: discoveredUser.certificateData,
+                            serialNumber: discoveredUser.serialNumber,
                             isOnline: discoveredUser.isOnline
                         )
                     }
                 },
-                onUserOffline: { [weak self] username in
+                onUserOffline: { [weak self] username, serial in
                     Task { @MainActor in
-                        self?.markUserOffline(name: username)
+                        if let serial = serial {
+                            self?.markUserOffline(serialNumber: serial)
+                        } else {
+                            self?.markUserOffline(name: username)
+                        }
                     }
                 }
             )

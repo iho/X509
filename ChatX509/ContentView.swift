@@ -58,6 +58,11 @@ struct ContentView: View {
                     .transition(.opacity)
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .userDidLogout)) { _ in
+            withAnimation(.easeInOut(duration: 0.3)) {
+                currentScreen = .setup
+            }
+        }
     }
 }
 

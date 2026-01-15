@@ -158,12 +158,22 @@ struct LogoutRevokeView: View {
             print("Revoking certificate at CA...")
             // TODO: CA revocation logic
         }
-        print("Deleting local certificate...")
-        // TODO: Local delete logic
+        
+        print("Clearing local identity...")
+        
+        // Clear certificate and private key
+        CertificateManager.shared.clearIdentity()
+        
+        // DO NOT clear chats anymore - as per user request
+        
+        // Notify app to return to setup screen
+        NotificationCenter.default.post(name: .userDidLogout, object: nil)
+        
         dismiss()
     }
 }
 
-#Preview {
-    LogoutRevokeView()
+// Notification for logout
+extension Notification.Name {
+    static let userDidLogout = Notification.Name("userDidLogout")
 }

@@ -26,10 +26,11 @@ actor UserDiscoveryService {
     
     // Discovered users callback
     private var onUserDiscovered: ((DiscoveredUser) -> Void)?
-    private var onUserOffline: ((String) -> Void)?
+    private var onUserOffline: ((String, Data?) -> Void)?
     
-    // Track last seen times
+    // Track last seen times and mapping from username to serial
     private var lastSeenTimes: [String: Date] = [:]
+    private var usernameToSerial: [String: Data] = [:]
     
     private let multicast = MulticastService.shared
     private let certificateManager = CertificateManager.shared
@@ -39,7 +40,7 @@ actor UserDiscoveryService {
     // MARK: - Public API
     
     /// Start the discovery service
-    func start(onUserDiscovered: @escaping (DiscoveredUser) -> Void, onUserOffline: @escaping (String) -> Void) {
+    func start(onUserDiscovered: @escaping (DiscoveredUser) -> Void, onUserOffline: @escaping (String, Data?) -> Void) {
         guard !isRunning else { return }
         isRunning = true
         
@@ -80,6 +81,23 @@ actor UserDiscoveryService {
     /// Announce presence immediately (useful when coming online)
     func announceNow() async {
         await announcePresence(status: .online)
+    }
+    
+    /// Restart discovery service (e.g. after identity change)
+    func restart() {
+        guard isRunning else { return }
+        print("[Discovery] Restarting service...")
+        
+        // Save callbacks
+        let onDiscovered = self.onUserDiscovered
+        let onOffline = self.onUserOffline
+        
+        stop()
+        
+        // Restart with saved callbacks
+        if let onDiscovered = onDiscovered, let onOffline = onOffline {
+            start(onUserDiscovered: onDiscovered, onUserOffline: onOffline)
+        }
     }
     
     // MARK: - Private Implementation
@@ -183,13 +201,15 @@ actor UserDiscoveryService {
                 let discoveredUser = DiscoveredUser(
                     username: username,
                     certificateData: certData,
+                    serialNumber: Data(certificate.toBeSigned.serialNumber),
                     encryptionPublicKey: encryptionKey,
                     lastSeen: Date(),
                     isOnline: presence.status == .online
                 )
                 
-                // Update last seen
+                // Update last seen and mapping
                 lastSeenTimes[username] = Date()
+                usernameToSerial[username] = Data(certificate.toBeSigned.serialNumber)
                 
                 print("[Discovery] Discovered user: \(username)")
                 
@@ -217,8 +237,10 @@ actor UserDiscoveryService {
             }
             
             for username in staleUsers {
+                let serial = usernameToSerial[username]
                 lastSeenTimes.removeValue(forKey: username)
-                onUserOffline?(username)
+                usernameToSerial.removeValue(forKey: username)
+                onUserOffline?(username, serial)
             }
         }
     }
@@ -229,6 +251,7 @@ actor UserDiscoveryService {
 struct DiscoveredUser: Sendable {
     let username: String
     let certificateData: Data
+    let serialNumber: Data
     let encryptionPublicKey: P256.KeyAgreement.PublicKey
     let lastSeen: Date
     let isOnline: Bool

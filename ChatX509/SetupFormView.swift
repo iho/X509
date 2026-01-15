@@ -10,8 +10,11 @@ import UniformTypeIdentifiers
 
 struct SetupFormView: View {
     @StateObject private var settings = ChatSettings.shared
-    @State private var username: String = ""
-    @State private var errorMessage: String?
+    @State private var showQuickGenerate = false
+    @State private var showEnroll = false
+    @State private var showImport = false
+    @State private var quickUsername: String = ""
+    @State private var isFilePickerPresented = false
     
     var onConnect: (() -> Void)?
     
@@ -30,30 +33,157 @@ struct SetupFormView: View {
                 .ignoresSafeArea()
                 
                 ScrollView {
-                    VStack(spacing: 32) {
+                    VStack(spacing: 40) {
                         // Header
                         headerSection
                         
-                        // Form fields
+                        // Action Buttons
                         VStack(spacing: 20) {
-                            usernameField
+                            // Path 1: Quick Generate
+                            setupCard(
+                                title: "Quick Start",
+                                subtitle: "Instant temporary identity. Rotates every 30 mins.",
+                                icon: "bolt.fill",
+                                color: .blue,
+                                action: { showQuickGenerate = true }
+                            )
+                            
+                            // Path 2: Formal Enrollment
+                            setupCard(
+                                title: "Enroll New",
+                                subtitle: "Formal setup with organizational details.",
+                                icon: "person.badge.shield.checkmark.fill",
+                                color: .purple,
+                                action: { showEnroll = true }
+                            )
+                            
+                            // Path 3: Import
+                            setupCard(
+                                title: "Import Identity",
+                                subtitle: "Restore from a .p12 or backup file.",
+                                icon: "arrow.down.doc.fill",
+                                color: .orange,
+                                action: { isFilePickerPresented = true }
+                            )
                         }
                         .padding(.horizontal, 24)
-                        
-                        // Connect button
-                        connectButton
-                            .padding(.horizontal, 24)
-                            .padding(.top, 16)
                         
                         Spacer(minLength: 40)
                     }
                     .padding(.top, 40)
                 }
             }
+            .sheet(isPresented: $showQuickGenerate) {
+                quickGenerateSheet
+            }
+            .sheet(isPresented: $showEnroll) {
+                LoginEnrollView()
+            }
+            .fileImporter(
+                isPresented: $isFilePickerPresented,
+                allowedContentTypes: [.data, UTType(filenameExtension: "p12") ?? .data, UTType(filenameExtension: "pem") ?? .data],
+                allowsMultipleSelection: false
+            ) { result in
+                handleImport(result)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .userDidConnect)) { _ in
+                // Close sheets and trigger transition to chat
+                showQuickGenerate = false
+                showEnroll = false
+                onConnect?()
+            }
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
         }
+    }
+    
+    // MARK: - Components
+    
+    private func setupCard(title: String, subtitle: String, icon: String, color: Color, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 20) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(color.opacity(0.15))
+                        .frame(width: 56, height: 56)
+                    
+                    Image(systemName: icon)
+                        .font(.title2)
+                        .foregroundColor(color)
+                }
+                
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title)
+                        .font(.headline)
+                        .foregroundColor(.white)
+                    
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundColor(.gray)
+                        .multilineTextAlignment(.leading)
+                }
+                
+                Spacer()
+                
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.bold))
+                    .foregroundColor(.gray.opacity(0.5))
+            }
+            .padding(16)
+            .background(
+                RoundedRectangle(cornerRadius: 20)
+                    .fill(Color.white.opacity(0.05))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 20)
+                            .stroke(Color.white.opacity(0.1), lineWidth: 1)
+                    )
+            )
+        }
+        .buttonStyle(.plain)
+    }
+    
+    private var quickGenerateSheet: some View {
+        NavigationStack {
+            ZStack {
+                Color(red: 0.1, green: 0.1, blue: 0.2).ignoresSafeArea()
+                
+                VStack(spacing: 32) {
+                    Text("Enter Nickname")
+                        .font(.title.bold())
+                        .foregroundColor(.white)
+                    
+                    TextField("Username", text: $quickUsername)
+                        .padding()
+                        .background(Color.white.opacity(0.1))
+                        .cornerRadius(12)
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 40)
+                    
+                    Button(action: performQuickStart) {
+                        Text("Start Chatting")
+                            .font(.headline)
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                            .background(Color.blue)
+                            .cornerRadius(12)
+                    }
+                    .padding(.horizontal, 40)
+                    .disabled(quickUsername.isEmpty)
+                    
+                    Spacer()
+                }
+                .padding(.top, 60)
+            }
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { showQuickGenerate = false }
+                        .foregroundColor(.gray)
+                }
+            }
+        }
+        .presentationDetents([.medium])
     }
     
     // MARK: - Header
@@ -86,81 +216,45 @@ struct SetupFormView: View {
                 .font(.system(size: 32, weight: .bold, design: .rounded))
                 .foregroundColor(.white)
             
-            Text("Local Self-Signed Messaging")
+            Text("Choose your identity path")
                 .font(.subheadline)
                 .foregroundColor(.gray)
         }
     }
     
-    // MARK: - Username Field
-    private var usernameField: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label("Identity", systemImage: "person.circle.fill")
-                .font(.subheadline.weight(.medium))
-                .foregroundColor(.gray)
-            
-            HStack(spacing: 12) {
-                Image(systemName: "person.fill")
-                    .foregroundColor(.blue)
-                    .frame(width: 24)
-                
-                TextField("Enter username", text: $username)
-                    .textContentType(.username)
-                    #if os(iOS)
-                    .autocapitalization(.none)
-                    #endif
-                    .disableAutocorrection(true)
-                    .foregroundColor(Color.white)
-            }
-            .padding()
-            .background(
-                RoundedRectangle(cornerRadius: 16)
-                    .fill(Color.white.opacity(0.08))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 16)
-                            .stroke(Color.white.opacity(0.1), lineWidth: 1)
-                    )
-            )
-        }
-    }
-    
-    // MARK: - Connect Button
-    private var connectButton: some View {
-        Button(action: connect) {
-            HStack(spacing: 12) {
-                Image(systemName: "arrow.right.circle.fill")
-                    .font(.title3)
-                Text("Start Chatting")
-                    .font(.headline)
-            }
-            .foregroundColor(Color.white)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 16)
-            .background(
-                LinearGradient(
-                    colors: [Color.blue, Color.purple],
-                    startPoint: .leading,
-                    endPoint: .trailing
-                )
-                .opacity(isFormValid ? 1.0 : 0.5)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: 16))
-            .shadow(color: Color.blue.opacity(0.4), radius: 12, y: 6)
-        }
-        .disabled(!isFormValid)
-    }
-    
-    // MARK: - Validation
-    private var isFormValid: Bool {
-        !username.isEmpty
-    }
-    
     // MARK: - Actions
-    private func connect() {
-        guard !username.isEmpty else { return }
-        CertificateManager.shared.startRotation(username: username)
+    private func performQuickStart() {
+        guard !quickUsername.isEmpty else { return }
+        CertificateManager.shared.startRotation(username: quickUsername)
         onConnect?()
     }
+    
+    private func handleImport(_ result: Result<[URL], Error>) {
+        switch result {
+        case .success(let urls):
+            guard let url = urls.first else { return }
+            guard url.startAccessingSecurityScopedResource() else { return }
+            defer { url.stopAccessingSecurityScopedResource() }
+            
+            do {
+                let data = try Data(contentsOf: url)
+                do {
+                    try CertificateManager.shared.importIdentity(data)
+                    onConnect?()
+                } catch {
+                     print("Import failed with error: \(error.localizedDescription)")
+                }
+            } catch {
+                print("File read failed: \(error)")
+            }
+        case .failure(let error):
+            print("Import failed: \(error)")
+        }
+    }
+}
+
+extension Notification.Name {
+    static let userDidConnect = Notification.Name("userDidConnect")
 }
 
 #Preview {
