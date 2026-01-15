@@ -7,6 +7,7 @@
 
 import Foundation
 import Combine
+import SwiftASN1
 
 /// Represents a chat user/contact
 struct ChatUser: Identifiable, Codable, Hashable {
@@ -138,9 +139,27 @@ final class ChatUserStore: ObservableObject {
     /// Add or update a user discovered on the network
     /// Add or update a user discovered on the network
     func addOrUpdateDiscoveredUser(name: String, certificateData: Data, serialNumber: Data, isOnline: Bool) {
+        
+        // Parse Certificate to get full subject (CN, O, etc.)
+        var fullSubject = "CN=\(name)"
+        var organization: String?
+        
+        if let cert = try? AuthenticationFramework_Certificate(derEncoded: ArraySlice(certificateData)) {
+            let details = CertificateManager.shared.extractSubjectDetails(from: cert)
+            var parts: [String] = []
+            if let cn = details["Common Name (CN)"] { parts.append("CN=\(cn)") } else { parts.append("CN=\(name)") }
+            if let org = details["Organization (O)"] { 
+                parts.append("O=\(org)")
+                organization = org
+            }
+            if let ou = details["Organizational Unit (OU)"] { parts.append("OU=\(ou)") }
+            fullSubject = parts.joined(separator: ", ")
+        }
+
         // 1. Try to find by serial number (exact identity match)
         if let index = users.firstIndex(where: { $0.serialNumber == serialNumber }) {
             users[index].name = name
+            users[index].certificateSubject = fullSubject
             users[index].certificateData = certificateData
             users[index].lastSeen = Date()
             users[index].isOnline = isOnline
@@ -150,6 +169,7 @@ final class ChatUserStore: ObservableObject {
         else if let index = users.firstIndex(where: { $0.name == name }) {
             print("User '\(name)' rotated identity (new serial). Updating credentials.")
             users[index].serialNumber = serialNumber
+            users[index].certificateSubject = fullSubject
             users[index].certificateData = certificateData
             users[index].lastSeen = Date()
             users[index].isOnline = isOnline
@@ -159,7 +179,7 @@ final class ChatUserStore: ObservableObject {
         else {
             let newUser = ChatUser(
                 name: name,
-                certificateSubject: "CN=\(name)",
+                certificateSubject: fullSubject,
                 isOnline: isOnline,
                 certificateData: certificateData,
                 serialNumber: serialNumber,

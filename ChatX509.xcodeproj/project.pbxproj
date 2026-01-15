@@ -404,18 +404,18 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = ChatX509.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = C379PD94M5;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSAppleMusicUsageDescription = "";
+				INFOPLIST_KEY_NSBonjourServices = "_chatx509._tcp _chatx509._udp";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "We use the local network to discover and chat with nearby users.";
+				INFOPLIST_KEY_NSNearbyInteractionAllowOnceUsageDescription = sdcdsdfsfs;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
-INFOPLIST_KEY_NSLocalNetworkUsageDescription = "We use the local network to discover and chat with nearby users.";
-INFOPLIST_KEY_NSBonjourServices = (
-"_chatx509._tcp",
-"_chatx509._udp",
-);
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
@@ -425,7 +425,7 @@ INFOPLIST_KEY_NSBonjourServices = (
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = dev.horobets.ChatX5092;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.horobets.x509;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -443,18 +443,18 @@ INFOPLIST_KEY_NSBonjourServices = (
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = ChatX509.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = C379PD94M5;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSAppleMusicUsageDescription = "";
+				INFOPLIST_KEY_NSBonjourServices = "_chatx509._tcp _chatx509._udp";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "We use the local network to discover and chat with nearby users.";
+				INFOPLIST_KEY_NSNearbyInteractionAllowOnceUsageDescription = sdcdsdfsfs;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
-INFOPLIST_KEY_NSLocalNetworkUsageDescription = "We use the local network to discover and chat with nearby users.";
-INFOPLIST_KEY_NSBonjourServices = (
-"_chatx509._tcp",
-"_chatx509._udp",
-);
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
@@ -464,7 +464,7 @@ INFOPLIST_KEY_NSBonjourServices = (
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = dev.horobets.ChatX5092;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.horobets.x509;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;

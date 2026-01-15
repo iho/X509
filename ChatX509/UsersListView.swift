@@ -22,6 +22,7 @@ struct UsersListView: View {
     @State private var showExpirationAlert = false
     @State private var showDeleteAllConfirmation = false
     @State private var userToDelete: ChatUser?
+    @State private var searchText = ""
     
     enum ActiveSheet: Identifiable {
         case addUser
@@ -104,6 +105,7 @@ struct UsersListView: View {
             #if os(macOS)
             .toolbarBackground(.ultraThinMaterial, for: .windowToolbar)
             #endif
+            .searchable(text: $searchText, placement: .automatic, prompt: "Search users or organizations")
         }
         .sheet(item: $activeSheet) { sheet in
             switch sheet {
@@ -256,7 +258,13 @@ struct UsersListView: View {
     
     /// Users sorted by most recent message first, then by online status
     private var sortedUsers: [ChatUser] {
-        userStore.users.sorted { a, b in
+        let filtered = userStore.users.filter { user in
+            if searchText.isEmpty { return true }
+            return user.name.localizedCaseInsensitiveContains(searchText) ||
+                   user.certificateSubject.localizedCaseInsensitiveContains(searchText)
+        }
+        
+        return filtered.sorted { a, b in
             // First by last message date (most recent first)
             if let dateA = a.lastMessageDate, let dateB = b.lastMessageDate {
                 return dateA > dateB
@@ -546,14 +554,23 @@ struct UserRowView: View {
     }
     
     private var userDisplayTitle: String {
+        // Extract Organization from certificateSubject "..., O=Org, ..."
+        var orgDisplay = ""
+        if let range = user.certificateSubject.range(of: "O=([^,]+)", options: .regularExpression) {
+            let orgPart = String(user.certificateSubject[range])
+            // Remove "O=" prefix
+            let orgName = orgPart.dropFirst(2)
+            orgDisplay = " (\(orgName))"
+        }
+        
         let sameNameUsers = ChatUserStore.shared.users.filter { $0.name == user.name }
         if sameNameUsers.count > 1 {
             if let serial = user.serialNumber {
                 let serialHex = serial.prefix(4).map { String(format: "%02X", $0) }.joined()
-                return "\(user.name) (#\(serialHex))"
+                return "\(user.name)\(orgDisplay) (#\(serialHex))"
             }
         }
-        return user.name
+        return "\(user.name)\(orgDisplay)"
     }
     
     private var avatarColors: [Color] {
