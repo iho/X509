@@ -15,6 +15,7 @@ struct SetupFormView: View {
     @State private var showImport = false
     @State private var quickUsername: String = ""
     @State private var isFilePickerPresented = false
+    @Environment(\.colorScheme) var colorScheme
     
     var onConnect: (() -> Void)?
     
@@ -22,15 +23,20 @@ struct SetupFormView: View {
         NavigationStack {
             ZStack {
                 // Background gradient
-                LinearGradient(
-                    colors: [
-                        Color(red: 0.1, green: 0.1, blue: 0.2),
-                        Color(red: 0.05, green: 0.05, blue: 0.15)
-                    ],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-                .ignoresSafeArea()
+                // Background gradient
+                if colorScheme == .dark {
+                    LinearGradient(
+                        colors: [
+                            Color(red: 0.1, green: 0.1, blue: 0.2),
+                            Color(red: 0.05, green: 0.05, blue: 0.15)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                    .ignoresSafeArea()
+                } else {
+                    Color(white: 0.95).ignoresSafeArea()
+                }
                 
                 ScrollView {
                     VStack(spacing: 40) {
@@ -116,11 +122,11 @@ struct SetupFormView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(title)
                         .font(.headline)
-                        .foregroundColor(.white)
+                        .foregroundColor(.primary)
                     
                     Text(subtitle)
                         .font(.caption)
-                        .foregroundColor(.gray)
+                        .foregroundColor(.secondary)
                         .multilineTextAlignment(.leading)
                 }
                 
@@ -131,13 +137,15 @@ struct SetupFormView: View {
                     .foregroundColor(.gray.opacity(0.5))
             }
             .padding(16)
+            .padding(16)
             .background(
                 RoundedRectangle(cornerRadius: 20)
-                    .fill(Color.white.opacity(0.05))
+                    .fill(colorScheme == .dark ? Color.white.opacity(0.05) : Color.white)
                     .overlay(
                         RoundedRectangle(cornerRadius: 20)
-                            .stroke(Color.white.opacity(0.1), lineWidth: 1)
+                            .stroke(colorScheme == .dark ? Color.white.opacity(0.1) : Color.black.opacity(0.05), lineWidth: 1)
                     )
+                    .shadow(color: colorScheme == .dark ? .clear : .black.opacity(0.05), radius: 5, x: 0, y: 2)
             )
         }
         .buttonStyle(.plain)
@@ -146,18 +154,22 @@ struct SetupFormView: View {
     private var quickGenerateSheet: some View {
         NavigationStack {
             ZStack {
-                Color(red: 0.1, green: 0.1, blue: 0.2).ignoresSafeArea()
+                if colorScheme == .dark {
+                    Color(red: 0.1, green: 0.1, blue: 0.2).ignoresSafeArea()
+                } else {
+                    Color(white: 0.95).ignoresSafeArea()
+                }
                 
                 VStack(spacing: 32) {
                     Text("Enter Nickname")
                         .font(.title.bold())
-                        .foregroundColor(.white)
+                        .foregroundColor(.primary)
                     
                     TextField("Username", text: $quickUsername)
                         .padding()
-                        .background(Color.white.opacity(0.1))
+                        .background(colorScheme == .dark ? Color.white.opacity(0.1) : Color.white)
                         .cornerRadius(12)
-                        .foregroundColor(.white)
+                        .foregroundColor(.primary)
                         .padding(.horizontal, 40)
                     
                     Button(action: performQuickStart) {
@@ -214,7 +226,7 @@ struct SetupFormView: View {
             
             Text("CHAT X.509")
                 .font(.system(size: 32, weight: .bold, design: .rounded))
-                .foregroundColor(.white)
+                .foregroundColor(.primary)
             
             Text("Choose your identity path")
                 .font(.subheadline)

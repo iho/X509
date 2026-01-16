@@ -12,6 +12,7 @@ struct LoginEnrollView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var mode: LoginMode = .loadFromFile
     @State private var organizationalUnit: String = ""
+    @Environment(\.colorScheme) var colorScheme
     @State private var commonName: String = ""
     @State private var isFilePickerPresented: Bool = false
     @State private var selectedFileName: String?
@@ -26,15 +27,20 @@ struct LoginEnrollView: View {
         NavigationStack {
             ZStack {
                 // Background gradient
-                LinearGradient(
-                    colors: [
-                        Color(red: 0.1, green: 0.1, blue: 0.2),
-                        Color(red: 0.05, green: 0.05, blue: 0.15)
-                    ],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-                .ignoresSafeArea()
+                // Background gradient
+                if colorScheme == .dark {
+                    LinearGradient(
+                        colors: [
+                            Color(red: 0.1, green: 0.1, blue: 0.2),
+                            Color(red: 0.05, green: 0.05, blue: 0.15)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                    .ignoresSafeArea()
+                } else {
+                    Color(white: 0.95).ignoresSafeArea()
+                }
                 
                 ScrollView {
                     VStack(spacing: 32) {
@@ -84,11 +90,11 @@ struct LoginEnrollView: View {
         VStack(spacing: 12) {
             Text("Login / Enroll")
                 .font(.system(size: 28, weight: .bold, design: .rounded))
-                .foregroundColor(.white)
+                .foregroundColor(.primary)
             
             Text("Access your secure identity")
                 .font(.subheadline)
-                .foregroundColor(.gray)
+                .foregroundColor(.secondary)
         }
     }
     
@@ -98,7 +104,7 @@ struct LoginEnrollView: View {
             modeButton(title: "Load Existing", mode: .loadFromFile)
             modeButton(title: "Create New", mode: .createNew)
         }
-        .background(Color.white.opacity(0.1))
+        .background(colorScheme == .dark ? Color.white.opacity(0.1) : Color.black.opacity(0.05))
         .clipShape(Capsule())
         .padding(.horizontal, 24)
     }
@@ -110,10 +116,19 @@ struct LoginEnrollView: View {
                 .foregroundColor(self.mode == mode ? .white : .gray)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 12)
+                .padding(.vertical, 12)
                 .background(
-                    self.mode == mode ?
-                    LinearGradient(colors: [.blue, .purple], startPoint: .leading, endPoint: .trailing) :
-                    LinearGradient(colors: [.clear, .clear], startPoint: .leading, endPoint: .trailing)
+                    Group {
+                        if self.mode == mode {
+                            if colorScheme == .dark {
+                                LinearGradient(colors: [.blue, .purple], startPoint: .leading, endPoint: .trailing)
+                            } else {
+                                Color.blue
+                            }
+                        } else {
+                            Color.clear
+                        }
+                    }
                 )
                 .clipShape(Capsule())
         }
@@ -133,7 +148,7 @@ struct LoginEnrollView: View {
                             .foregroundColor(.orange)
                         
                         Text(selectedFileName ?? "Select certificate file...")
-                            .foregroundColor(selectedFileName != nil ? .white : .gray)
+                            .foregroundColor(selectedFileName != nil ? .primary : .gray)
                             .lineLimit(1)
                             .truncationMode(.middle)
                         
@@ -146,10 +161,10 @@ struct LoginEnrollView: View {
                     .padding()
                     .background(
                         RoundedRectangle(cornerRadius: 16)
-                            .fill(Color.white.opacity(0.08))
+                            .fill(colorScheme == .dark ? Color.white.opacity(0.08) : Color.white)
                             .overlay(
                                 RoundedRectangle(cornerRadius: 16)
-                                    .stroke(Color.white.opacity(0.1), lineWidth: 1)
+                                    .stroke(colorScheme == .dark ? Color.white.opacity(0.1) : Color.black.opacity(0.1), lineWidth: 1)
                             )
                     )
                 }
@@ -162,7 +177,13 @@ struct LoginEnrollView: View {
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 16)
                     .background(
-                        LinearGradient(colors: [.blue, .purple], startPoint: .leading, endPoint: .trailing)
+                        Group {
+                            if colorScheme == .dark {
+                                LinearGradient(colors: [.blue, .purple], startPoint: .leading, endPoint: .trailing)
+                            } else {
+                                Color.blue
+                            }
+                        }
                     )
                     .clipShape(RoundedRectangle(cornerRadius: 16))
                     .shadow(color: Color.blue.opacity(0.3), radius: 8, y: 4)
@@ -186,7 +207,13 @@ struct LoginEnrollView: View {
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 16)
                     .background(
-                        LinearGradient(colors: [.blue, .purple], startPoint: .leading, endPoint: .trailing)
+                        Group {
+                            if colorScheme == .dark {
+                                LinearGradient(colors: [.blue, .purple], startPoint: .leading, endPoint: .trailing)
+                            } else {
+                                Color.blue
+                            }
+                        }
                     )
                     .clipShape(RoundedRectangle(cornerRadius: 16))
                     .shadow(color: Color.blue.opacity(0.3), radius: 8, y: 4)
@@ -197,7 +224,7 @@ struct LoginEnrollView: View {
     }
     
     private func inputField(title: String, placeholder: String, text: Binding<String>, icon: String) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 12) {
             Label(title, systemImage: icon)
                 .font(.subheadline.weight(.medium))
                 .foregroundColor(.gray)
@@ -205,13 +232,13 @@ struct LoginEnrollView: View {
             TextField(placeholder, text: text)
                 .textFieldStyle(.plain)
                 .padding()
-                .foregroundColor(.white)
+                .foregroundColor(.primary)
                 .background(
                     RoundedRectangle(cornerRadius: 16)
-                        .fill(Color.white.opacity(0.08))
+                        .fill(colorScheme == .dark ? Color.white.opacity(0.08) : Color.white)
                         .overlay(
                             RoundedRectangle(cornerRadius: 16)
-                                .stroke(Color.white.opacity(0.1), lineWidth: 1)
+                                .stroke(colorScheme == .dark ? Color.white.opacity(0.1) : Color.black.opacity(0.1), lineWidth: 1)
                         )
                 )
         }

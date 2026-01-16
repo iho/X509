@@ -9,6 +9,7 @@ import SwiftUI
 
 struct AddUserView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) var colorScheme
     @StateObject private var userStore = ChatUserStore.shared
     
     @State private var userName: String = ""
@@ -20,8 +21,12 @@ struct AddUserView: View {
         NavigationStack {
             ZStack {
                 // Background
-                Color(red: 0.1, green: 0.1, blue: 0.2)
-                    .ignoresSafeArea()
+                // Background
+                if colorScheme == .dark {
+                    Color(red: 0.1, green: 0.1, blue: 0.2).ignoresSafeArea()
+                } else {
+                    Color(white: 0.95).ignoresSafeArea() // White-gray
+                }
                 
                 ScrollView {
                     VStack(spacing: 32) {
@@ -67,7 +72,7 @@ struct AddUserView: View {
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(.ultraThinMaterial, for: .navigationBar)
-            .toolbarColorScheme(.dark, for: .navigationBar)
+            .toolbarColorScheme(colorScheme == .dark ? .dark : .light, for: .navigationBar)
             #endif
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -99,12 +104,9 @@ struct AddUserView: View {
     private var headerIcon: some View {
         ZStack {
             Circle()
-                .fill(
-                    LinearGradient(
-                        colors: [Color.blue.opacity(0.4), Color.purple.opacity(0.2)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
+                .fill(colorScheme == .dark ?
+                     AnyShapeStyle(LinearGradient(colors: [Color.blue.opacity(0.4), Color.purple.opacity(0.2)], startPoint: .topLeading, endPoint: .bottomTrailing)) :
+                     AnyShapeStyle(Color.gray.opacity(0.1))
                 )
                 .frame(width: 100, height: 100)
                 .blur(radius: 20)
@@ -112,11 +114,9 @@ struct AddUserView: View {
             Image(systemName: "person.badge.plus")
                 .font(.system(size: 44, weight: .medium))
                 .foregroundStyle(
-                    LinearGradient(
-                        colors: [.blue, .purple],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
+                    colorScheme == .dark ?
+                    AnyShapeStyle(LinearGradient(colors: [.blue, .purple], startPoint: .topLeading, endPoint: .bottomTrailing)) :
+                    AnyShapeStyle(Color.blue)
                 )
         }
     }
@@ -143,15 +143,16 @@ struct AddUserView: View {
                     .textInputAutocapitalization(.never)
                     #endif
                     .disableAutocorrection(true)
-                    .foregroundColor(Color.white)
+                    .disableAutocorrection(true)
+                    .foregroundColor(.primary)
             }
             .padding()
             .background(
                 RoundedRectangle(cornerRadius: 16)
-                    .fill(Color.white.opacity(0.08))
+                    .fill(colorScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.05))
                     .overlay(
                         RoundedRectangle(cornerRadius: 16)
-                            .stroke(Color.white.opacity(0.1), lineWidth: 1)
+                            .stroke(colorScheme == .dark ? Color.white.opacity(0.1) : Color.black.opacity(0.1), lineWidth: 1)
                     )
             )
         }
@@ -162,7 +163,7 @@ struct AddUserView: View {
         VStack(alignment: .leading, spacing: 12) {
             Label("How it works", systemImage: "info.circle")
                 .font(.subheadline.weight(.semibold))
-                .foregroundColor(.white)
+                .foregroundColor(.primary)
             
             Text("Enter the certificate subject (CN/DN) of the person you want to chat with. Their certificate will be fetched from the CA server to establish a secure connection.")
                 .font(.caption)
@@ -170,13 +171,25 @@ struct AddUserView: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding()
+        .padding()
         .background(
-            RoundedRectangle(cornerRadius: 16)
-                .fill(Color.blue.opacity(0.1))
-                .overlay(
+            Group {
+                if colorScheme == .dark {
                     RoundedRectangle(cornerRadius: 16)
-                        .stroke(Color.blue.opacity(0.2), lineWidth: 1)
-                )
+                        .fill(Color.blue.opacity(0.1))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 16)
+                                .stroke(Color.blue.opacity(0.2), lineWidth: 1)
+                        )
+                } else {
+                    RoundedRectangle(cornerRadius: 16)
+                        .fill(Color.gray.opacity(0.05))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 16)
+                                .stroke(Color.gray.opacity(0.1), lineWidth: 1)
+                        )
+                }
+            }
         )
     }
     

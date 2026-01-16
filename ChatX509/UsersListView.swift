@@ -13,6 +13,8 @@ import SwiftASN1
 struct UsersListView: View {
     @StateObject private var userStore = ChatUserStore.shared
     @ObservedObject private var certificateManager = CertificateManager.shared
+    @AppStorage("isDarkMode") private var isDarkMode = true
+    @Environment(\.colorScheme) var colorScheme
     @State private var activeSheet: ActiveSheet?
     @State private var selectedUser: ChatUser?
     @State private var showKeyExporter = false
@@ -36,15 +38,27 @@ struct UsersListView: View {
         NavigationStack {
             ZStack {
                 // Background gradient
-                LinearGradient(
-                    colors: [
-                        Color(red: 0.1, green: 0.1, blue: 0.2),
-                        Color(red: 0.05, green: 0.05, blue: 0.15)
-                    ],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-                .ignoresSafeArea()
+                if colorScheme == .dark {
+                    LinearGradient(
+                        colors: [
+                            Color(red: 0.1, green: 0.1, blue: 0.2),
+                            Color(red: 0.05, green: 0.05, blue: 0.15)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                    .ignoresSafeArea()
+                } else {
+                    LinearGradient(
+                        colors: [
+                            Color(white: 0.95), // White-gray
+                            Color.white
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                    .ignoresSafeArea()
+                }
                 
                 VStack(spacing: 0) {
                     // Identity header
@@ -60,8 +74,8 @@ struct UsersListView: View {
             .navigationTitle("Chats")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.large)
-            .toolbarColorScheme(.dark, for: .navigationBar)
-            .toolbarBackground(Color(red: 0.1, green: 0.1, blue: 0.2), for: .navigationBar)
+            .toolbarColorScheme(isDarkMode ? .dark : .light, for: .navigationBar)
+            .toolbarBackground(isDarkMode ? Color(red: 0.1, green: 0.1, blue: 0.2) : Color(white: 0.95), for: .navigationBar)
             .toolbarBackground(.visible, for: .navigationBar)
             #endif
             .toolbar {
@@ -131,7 +145,10 @@ struct UsersListView: View {
                 // Certificate icon
                 ZStack {
                     Circle()
-                        .fill(LinearGradient(colors: [.blue.opacity(0.3), .purple.opacity(0.3)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                        .fill(colorScheme == .dark ?
+                             AnyShapeStyle(LinearGradient(colors: [.blue.opacity(0.3), .purple.opacity(0.3)], startPoint: .topLeading, endPoint: .bottomTrailing)) :
+                             AnyShapeStyle(Color.gray.opacity(0.1))
+                        )
                         .frame(width: 40, height: 40)
                     
                     Image(systemName: "person.badge.shield.checkmark.fill")
@@ -146,7 +163,7 @@ struct UsersListView: View {
                     
                     Text(CertificateManager.shared.username.isEmpty ? "Not enrolled" : CertificateManager.shared.username)
                         .font(.headline)
-                        .foregroundColor(.white)
+                        .foregroundColor(.primary)
                 }
                 
                 Spacer()
@@ -174,7 +191,7 @@ struct UsersListView: View {
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
-            .background(Color.white.opacity(0.05))
+            .background(colorScheme == .dark ? Color.white.opacity(0.05) : Color.black.opacity(0.05))
         }
         .buttonStyle(.plain)
     }
@@ -188,21 +205,27 @@ struct UsersListView: View {
                     .frame(width: 120, height: 120)
                     .blur(radius: 30)
                 
-                Image(systemName: "person.2.fill")
-                    .font(.system(size: 48))
-                    .foregroundStyle(
-                        LinearGradient(
-                            colors: [.blue, .purple],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
+                if colorScheme == .dark {
+                    Image(systemName: "person.2.fill")
+                        .font(.system(size: 48))
+                        .foregroundStyle(
+                            LinearGradient(
+                                colors: [.blue, .purple],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
                         )
-                    )
+                } else {
+                    Image(systemName: "person.2.fill")
+                        .font(.system(size: 48))
+                        .foregroundColor(.gray)
+                }
             }
             
             VStack(spacing: 8) {
                 Text("No Contacts Yet")
                     .font(.title2.weight(.semibold))
-                    .foregroundColor(.white)
+                    .foregroundColor(.primary)
                 
                 Text("Add your first contact to start\na secure conversation")
                     .font(.subheadline)
@@ -217,11 +240,9 @@ struct UsersListView: View {
                     .padding(.horizontal, 24)
                     .padding(.vertical, 14)
                     .background(
-                        LinearGradient(
-                            colors: [.blue, .purple],
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        )
+                        colorScheme == .dark ?
+                        AnyShapeStyle(LinearGradient(colors: [.blue, .purple], startPoint: .leading, endPoint: .trailing)) :
+                        AnyShapeStyle(Color.blue)
                     )
                     .clipShape(Capsule())
             }
@@ -286,11 +307,9 @@ struct UsersListView: View {
             Image(systemName: "plus.circle.fill")
                 .font(.title3)
                 .foregroundStyle(
-                    LinearGradient(
-                        colors: [.blue, .purple],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
+                    colorScheme == .dark ?
+                    AnyShapeStyle(LinearGradient(colors: [.blue, .purple], startPoint: .topLeading, endPoint: .bottomTrailing)) :
+                    AnyShapeStyle(Color.blue)
                 )
         }
     }
@@ -299,6 +318,10 @@ struct UsersListView: View {
         Menu {
             Button(action: { activeSheet = .loginEnroll }) {
                 Label("Login / Enroll", systemImage: "person.badge.key")
+            }
+            
+            Toggle(isOn: $isDarkMode) {
+                Label("Dark Mode", systemImage: isDarkMode ? "moon.fill" : "sun.max.fill")
             }
             
             Button(action: { activeSheet = .logoutRevoke }) {
@@ -455,6 +478,7 @@ struct KeyDocument: FileDocument {
 // MARK: - User Row View
 struct UserRowView: View {
     let user: ChatUser
+    @Environment(\.colorScheme) var colorScheme
     
     var body: some View {
         HStack(spacing: 14) {
@@ -481,7 +505,7 @@ struct UserRowView: View {
                         .frame(width: 14, height: 14)
                         .overlay(
                             Circle()
-                                .stroke(Color(red: 0.1, green: 0.1, blue: 0.2), lineWidth: 3)
+                                .stroke(colorScheme == .dark ? Color(red: 0.1, green: 0.1, blue: 0.2) : Color.white, lineWidth: 3)
                         )
                         .offset(x: 18, y: 18)
                 }
@@ -492,7 +516,7 @@ struct UserRowView: View {
                 HStack {
                     Text(userDisplayTitle)
                         .font(.headline)
-                        .foregroundColor(.white)
+                        .foregroundColor(.primary)
                     
                     // Discovered badge
                     if user.isDiscovered {
@@ -536,11 +560,9 @@ struct UserRowView: View {
                             .padding(.horizontal, 8)
                             .padding(.vertical, 4)
                             .background(
-                                LinearGradient(
-                                    colors: [.blue, .purple],
-                                    startPoint: .leading,
-                                    endPoint: .trailing
-                                )
+                                colorScheme == .dark ?
+                                AnyShapeStyle(LinearGradient(colors: [.blue, .purple], startPoint: .leading, endPoint: .trailing)) :
+                                AnyShapeStyle(Color.blue)
                             )
                             .clipShape(Capsule())
                     }
@@ -549,7 +571,7 @@ struct UserRowView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
-        .background(Color.white.opacity(0.05))
+        .background(colorScheme == .dark ? Color.white.opacity(0.05) : Color.black.opacity(0.05))
         .contentShape(Rectangle())
     }
     
@@ -610,19 +632,26 @@ struct UserRowView: View {
 struct OwnCertificateSheet: View {
     @Environment(\.dismiss) private var dismiss
     let certificate: AuthenticationFramework_Certificate
+    @Environment(\.colorScheme) var colorScheme
     
     var body: some View {
         NavigationStack {
             ZStack {
-                Color(red: 0.05, green: 0.05, blue: 0.12)
-                    .ignoresSafeArea()
+                if colorScheme == .dark {
+                    Color(red: 0.05, green: 0.05, blue: 0.12).ignoresSafeArea()
+                } else {
+                    Color(white: 0.95).ignoresSafeArea()
+                }
                 
                 ScrollView {
                     VStack(spacing: 24) {
                         // Icon
                         ZStack {
                             Circle()
-                                .fill(LinearGradient(colors: [.blue.opacity(0.3), .purple.opacity(0.3)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                                .fill(colorScheme == .dark ?
+                                     AnyShapeStyle(LinearGradient(colors: [.blue.opacity(0.3), .purple.opacity(0.3)], startPoint: .topLeading, endPoint: .bottomTrailing)) :
+                                     AnyShapeStyle(Color.gray.opacity(0.1))
+                                )
                                 .frame(width: 80, height: 80)
                             
                             Image(systemName: "person.badge.shield.checkmark.fill")
@@ -635,11 +664,11 @@ struct OwnCertificateSheet: View {
                         VStack(spacing: 8) {
                             Text(CertificateManager.shared.username)
                                 .font(.title2.bold())
-                                .foregroundColor(.white)
+                                .foregroundColor(.primary)
                             
                             Text("Your secure identity")
                                 .font(.subheadline)
-                                .foregroundColor(.white.opacity(0.8))
+                                .foregroundColor(.secondary)
                         }
                         
                         // Certificate Status
@@ -665,7 +694,7 @@ struct OwnCertificateSheet: View {
                             }
                         }
                         .padding()
-                        .background(Color.white.opacity(0.05))
+                        .background(colorScheme == .dark ? Color.white.opacity(0.05) : Color.black.opacity(0.05))
                         .clipShape(RoundedRectangle(cornerRadius: 16))
                         .padding(.horizontal)
                         
@@ -682,7 +711,7 @@ struct OwnCertificateSheet: View {
                             )
                         }
                         .padding()
-                        .background(Color.white.opacity(0.05))
+                        .background(colorScheme == .dark ? Color.white.opacity(0.05) : Color.black.opacity(0.05))
                         .clipShape(RoundedRectangle(cornerRadius: 16))
                         .padding(.horizontal)
                         
@@ -707,11 +736,11 @@ struct OwnCertificateSheet: View {
             }
             .navigationTitle("Your Identity")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbarColorScheme(.dark, for: .navigationBar)
+            .toolbarColorScheme(colorScheme == .dark ? .dark : .light, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
-                        .foregroundColor(.white)
+                        .foregroundColor(.blue)
                 }
             }
         }
@@ -729,7 +758,7 @@ struct OwnCertificateSheet: View {
                         .font(.caption)
                 }
                 Text(value)
-                    .foregroundColor(.white)
+                    .foregroundColor(.primary)
             }
         }
     }
@@ -741,8 +770,8 @@ struct OwnCertificateSheet: View {
                 .foregroundColor(.gray)
             
             Text(data.prefix(16).map { String(format: "%02X", $0) }.joined(separator: " "))
-                .font(.system(.caption, design: .monospaced))
-                .foregroundColor(.white)
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundColor(.primary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }

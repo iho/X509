@@ -11,6 +11,7 @@ import SwiftASN1
 struct ChatView: View {
     let user: ChatUser
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) var colorScheme
     @StateObject private var messageStore: ChatMessageStore
     @State private var messageText: String = ""
     @State private var scrollProxy: ScrollViewProxy?
@@ -26,8 +27,14 @@ struct ChatView: View {
     var body: some View {
         ZStack {
             // Background
-            Color(red: 0.05, green: 0.05, blue: 0.12)
-                .ignoresSafeArea()
+            // Background
+            if colorScheme == .dark {
+                Color(red: 0.05, green: 0.05, blue: 0.12)
+                    .ignoresSafeArea()
+            } else {
+                Color(white: 0.95) // White-gray
+                    .ignoresSafeArea()
+            }
             
             VStack(spacing: 0) {
                 // Messages
@@ -99,7 +106,7 @@ struct ChatView: View {
             HStack {
                 TextField("Message", text: $messageText, axis: .vertical)
                     .textFieldStyle(.plain)
-                    .foregroundColor(.white)
+                    .foregroundColor(.primary)
                     .focused($isInputFocused)
                     .lineLimit(1...5)
                 
@@ -114,7 +121,7 @@ struct ChatView: View {
             .padding(.vertical, 10)
             .background(
                 RoundedRectangle(cornerRadius: 22)
-                    .fill(Color.white.opacity(0.1))
+                    .fill(colorScheme == .dark ? Color.white.opacity(0.1) : Color.black.opacity(0.05))
             )
             
             // Send button
@@ -123,11 +130,9 @@ struct ChatView: View {
                     Image(systemName: "arrow.up.circle.fill")
                         .font(.title)
                         .foregroundStyle(
-                            LinearGradient(
-                                colors: [.blue, .purple],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
+                            colorScheme == .dark ?
+                            AnyShapeStyle(LinearGradient(colors: [.blue, .purple], startPoint: .topLeading, endPoint: .bottomTrailing)) :
+                            AnyShapeStyle(Color.blue)
                         )
                 }
                 .transition(.scale.combined(with: .opacity))
@@ -154,7 +159,7 @@ struct ChatView: View {
         VStack(spacing: 2) {
             Text(user.name)
                 .font(.headline)
-                .foregroundColor(.white)
+                .foregroundColor(.primary)
             
             HStack(spacing: 4) {
                 Circle()
@@ -216,6 +221,7 @@ struct ChatView: View {
 // MARK: - Message Bubble View
 struct MessageBubbleView: View {
     let message: ChatMessage
+    @Environment(\.colorScheme) var colorScheme
     
     var body: some View {
         HStack {
@@ -224,7 +230,7 @@ struct MessageBubbleView: View {
             VStack(alignment: message.isFromMe ? .trailing : .leading, spacing: 4) {
                 Text(message.content)
                     .font(.body)
-                    .foregroundColor(.white)
+                    .foregroundColor(message.isFromMe ? .white : .primary)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
                     .background(bubbleBackground)
@@ -258,15 +264,21 @@ struct MessageBubbleView: View {
     private var bubbleBackground: some View {
         Group {
             if message.isFromMe {
-                LinearGradient(
-                    colors: [Color.blue, Color.purple.opacity(0.8)],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-                .clipShape(BubbleShape(isFromMe: true))
+                if colorScheme == .dark {
+                    LinearGradient(
+                        colors: [Color.blue, Color.purple.opacity(0.8)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                    .clipShape(BubbleShape(isFromMe: true))
+                } else {
+                    Color.blue
+                        .clipShape(BubbleShape(isFromMe: true))
+                }
             } else {
-                Color.white.opacity(0.15)
+                (colorScheme == .dark ? Color.white.opacity(0.15) : Color.white)
                     .clipShape(BubbleShape(isFromMe: false))
+                    .shadow(color: .black.opacity(0.05), radius: 1, x: 0, y: 1)
             }
         }
     }
@@ -365,20 +377,27 @@ struct BubbleShape: Shape {
 
 struct CertificateDetailSheet: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) var colorScheme
     let user: ChatUser
     
     var body: some View {
         NavigationStack {
             ZStack {
-                Color(red: 0.05, green: 0.05, blue: 0.12)
-                    .ignoresSafeArea()
+                if colorScheme == .dark {
+                    Color(red: 0.05, green: 0.05, blue: 0.12).ignoresSafeArea()
+                } else {
+                    Color(white: 0.95).ignoresSafeArea()
+                }
                 
                 ScrollView {
                     VStack(spacing: 24) {
                         // Icon
                         ZStack {
                             Circle()
-                                .fill(LinearGradient(colors: [.green.opacity(0.3), .blue.opacity(0.3)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                                .fill(colorScheme == .dark ?
+                                     AnyShapeStyle(LinearGradient(colors: [.green.opacity(0.3), .blue.opacity(0.3)], startPoint: .topLeading, endPoint: .bottomTrailing)) :
+                                     AnyShapeStyle(Color.green.opacity(0.1))
+                                )
                                 .frame(width: 80, height: 80)
                             
                             Image(systemName: "checkmark.shield.fill")
@@ -391,7 +410,7 @@ struct CertificateDetailSheet: View {
                         VStack(spacing: 8) {
                             Text(user.name)
                                 .font(.title2.bold())
-                                .foregroundColor(.white)
+                                .foregroundColor(.primary)
                             
                             Text(user.certificateSubject)
                                 .font(.subheadline)
@@ -413,7 +432,8 @@ struct CertificateDetailSheet: View {
                             }
                         }
                         .padding()
-                        .background(Color.white.opacity(0.05))
+                        .padding()
+                        .background(colorScheme == .dark ? Color.white.opacity(0.05) : Color.black.opacity(0.05))
                         .clipShape(RoundedRectangle(cornerRadius: 16))
                         .padding(.horizontal)
                         
@@ -431,7 +451,8 @@ struct CertificateDetailSheet: View {
                                 )
                             }
                             .padding()
-                            .background(Color.white.opacity(0.05))
+                            .padding()
+                            .background(colorScheme == .dark ? Color.white.opacity(0.05) : Color.black.opacity(0.05))
                             .clipShape(RoundedRectangle(cornerRadius: 16))
                             .padding(.horizontal)
                         }
@@ -461,7 +482,7 @@ struct CertificateDetailSheet: View {
                         .font(.caption)
                 }
                 Text(value)
-                    .foregroundColor(.white)
+                    .foregroundColor(.primary)
             }
         }
     }
@@ -474,7 +495,7 @@ struct CertificateDetailSheet: View {
             
             Text(data.prefix(16).map { String(format: "%02X", $0) }.joined(separator: " "))
                 .font(.system(.caption, design: .monospaced))
-                .foregroundColor(.white)
+                .foregroundColor(.primary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }

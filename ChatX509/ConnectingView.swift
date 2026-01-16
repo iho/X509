@@ -11,6 +11,7 @@ struct ConnectingView: View {
     @State private var rotationAngle: Double = 0
     @State private var pulseScale: CGFloat = 1.0
     @State private var statusText: String = "Connecting to CA Server..."
+    @Environment(\.colorScheme) var colorScheme
     
     let onComplete: () -> Void
     let onError: (String) -> Void
@@ -18,15 +19,20 @@ struct ConnectingView: View {
     var body: some View {
         ZStack {
             // Background gradient
-            LinearGradient(
-                colors: [
-                    Color(red: 0.1, green: 0.1, blue: 0.2),
-                    Color(red: 0.05, green: 0.05, blue: 0.15)
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            .ignoresSafeArea()
+            // Background gradient
+            if colorScheme == .dark {
+                LinearGradient(
+                    colors: [
+                        Color(red: 0.1, green: 0.1, blue: 0.2),
+                        Color(red: 0.05, green: 0.05, blue: 0.15)
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+                .ignoresSafeArea()
+            } else {
+                Color(white: 0.95).ignoresSafeArea()
+            }
             
             VStack(spacing: 48) {
                 Spacer()
@@ -38,12 +44,12 @@ struct ConnectingView: View {
                 VStack(spacing: 12) {
                     Text(statusText)
                         .font(.headline)
-                        .foregroundColor(.white)
+                        .foregroundColor(.primary)
                         .multilineTextAlignment(.center)
                     
                     Text("Please wait...")
                         .font(.subheadline)
-                        .foregroundColor(.gray)
+                        .foregroundColor(.secondary)
                 }
                 
                 Spacer()
@@ -52,7 +58,7 @@ struct ConnectingView: View {
                 Button(action: { onError("Connection cancelled") }) {
                     Text("Cancel")
                         .font(.subheadline.weight(.medium))
-                        .foregroundColor(.gray)
+                        .foregroundColor(.secondary)
                         .padding(.horizontal, 32)
                         .padding(.vertical, 12)
                         .background(

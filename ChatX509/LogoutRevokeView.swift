@@ -11,20 +11,26 @@ struct LogoutRevokeView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var revokeAtCA: Bool = false
     @State private var showConfirmation: Bool = false
+    @Environment(\.colorScheme) var colorScheme
     
     var body: some View {
         NavigationStack {
             ZStack {
                 // Background gradient
-                LinearGradient(
-                    colors: [
-                        Color(red: 0.1, green: 0.1, blue: 0.2),
-                        Color(red: 0.05, green: 0.05, blue: 0.15)
-                    ],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-                .ignoresSafeArea()
+                // Background gradient
+                if colorScheme == .dark {
+                    LinearGradient(
+                        colors: [
+                            Color(red: 0.1, green: 0.1, blue: 0.2),
+                            Color(red: 0.05, green: 0.05, blue: 0.15)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                    .ignoresSafeArea()
+                } else {
+                    Color(white: 0.95).ignoresSafeArea()
+                }
                 
                 VStack(spacing: 32) {
                     // Header
@@ -80,11 +86,11 @@ struct LogoutRevokeView: View {
             
             Text("Logout / Revoke")
                 .font(.system(size: 28, weight: .bold, design: .rounded))
-                .foregroundColor(.white)
+                .foregroundColor(.primary)
             
             Text("Manage your certificate security")
                 .font(.subheadline)
-                .foregroundColor(.gray)
+                .foregroundColor(.secondary)
         }
     }
     
@@ -94,21 +100,21 @@ struct LogoutRevokeView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Revoke at CA")
                     .font(.headline)
-                    .foregroundColor(.white)
+                    .foregroundColor(.primary)
                 
                 Text("Permanently invalidate this certificate on the server")
                     .font(.caption)
-                    .foregroundColor(.gray)
+                    .foregroundColor(.secondary)
             }
         }
         .toggleStyle(SwitchToggleStyle(tint: .red))
         .padding()
         .background(
             RoundedRectangle(cornerRadius: 16)
-                .fill(Color.white.opacity(0.08))
+                .fill(colorScheme == .dark ? Color.white.opacity(0.08) : Color.white)
                 .overlay(
                     RoundedRectangle(cornerRadius: 16)
-                        .stroke(Color.white.opacity(0.1), lineWidth: 1)
+                        .stroke(colorScheme == .dark ? Color.white.opacity(0.1) : Color.black.opacity(0.1), lineWidth: 1)
                 )
         )
     }
@@ -122,11 +128,11 @@ struct LogoutRevokeView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Certificate Destruction")
                     .font(.headline)
-                    .foregroundColor(.white)
+                    .foregroundColor(.primary)
                 
                 Text("Continuing will delete the X.509 certificate from this device storage. This process is irreversible.")
                     .font(.footnote)
-                    .foregroundColor(.gray)
+                    .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }

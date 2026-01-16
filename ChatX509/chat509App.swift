@@ -24,6 +24,7 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
 @main
 struct chat509App: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+    @AppStorage("isDarkMode") private var isDarkMode = true
     
     init() {
         // Start global message listener
@@ -35,6 +36,7 @@ struct chat509App: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .preferredColorScheme(isDarkMode ? .dark : .light)
         }
     }
 }
