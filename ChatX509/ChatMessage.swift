@@ -37,7 +37,8 @@ struct ChatMessage: Identifiable, Codable, Equatable {
         isEncrypted: Bool = false,
         attachmentData: Data? = nil,
         attachmentMime: String? = nil,
-        attachmentName: String? = nil
+        attachmentName: String? = nil,
+        localAttachmentPath: String? = nil
     ) {
         self.id = id
         self.content = content
@@ -50,6 +51,18 @@ struct ChatMessage: Identifiable, Codable, Equatable {
         self.attachmentData = attachmentData
         self.attachmentMime = attachmentMime
         self.attachmentName = attachmentName
+        self.localAttachmentPath = localAttachmentPath
+    }
+    
+    // New property for disk path
+    var localAttachmentPath: String?
+    
+    // Custom CodingKeys to EXCLUDE binary data (`attachmentData`) from JSON preservation
+    // This prevents the "Message too big" crash in UserDefaults/JSON
+    enum CodingKeys: String, CodingKey {
+        case id, content, timestamp, isFromMe, senderName, isDelivered, isRead, isEncrypted
+        case attachmentMime, attachmentName, localAttachmentPath
+        // Note: `attachmentData` is deliberately OMITTED
     }
 }
 
@@ -193,7 +206,8 @@ final class ChatMessageStore: ObservableObject {
                 wasEncrypted: wasEncrypted,
                 privateKey: privateKey,
                 attachmentName: attachmentName,
-                originalMime: rawMime // Pass original mime (text/plain or attachment type)
+                originalMime: rawMime, // Pass original mime (text/plain or attachment type)
+                plaintextPayload: rawPayload // NEW: Pass plaintext for local UI
             )
         }
     }
@@ -212,7 +226,8 @@ final class ChatMessageStore: ObservableObject {
         wasEncrypted: Bool,
         privateKey: P256.Signing.PrivateKey,
         attachmentName: String?,
-        originalMime: String?
+        originalMime: String?,
+        plaintextPayload: Data? // NEW parameter
     ) {
         // Payload: OctetString(Data) -> DER -> ASN1Any
         let payloadOctet = ASN1OctetString(contentBytes: ArraySlice(payloadData))
@@ -289,47 +304,47 @@ final class ChatMessageStore: ObservableObject {
             try msgSerializer.serialize(protocolMsg)
             let msgDer = msgSerializer.serializedBytes
             
-            // Local UI Update
-            let uiMessage = ChatMessage(
-                id: msgUUID,
-                content: content,
-                timestamp: now,
-                isFromMe: true,
-                senderName: certificateManager.username,
-                isDelivered: false,
-                isEncrypted: wasEncrypted,
-                attachmentData: attachmentName != nil ? payloadData : nil, // Store if att (note: storing encrypted locally if encrypted, logic might need tweak but ok for now)
-                attachmentMime: originalMime,
-                attachmentName: attachmentName
-            )
-            // Note: For local display of own encrypted attachments, we ideally store plaintext. 
-            // Correcting above line to store plaintext locally if we were the sender.
-            // But wait, payloadData above *is* encrypted if wasEncrypted is true. 
-            // We should use 'rawPayload' logic but it's not passed here.
-            // Simpler fix: If we are sending, we know what we sent.
-            // But finishSendingMessage takes payloadData (which might be encrypted).
-            // Let's rely on the fact that if it's an attachment, we probably want to save what we sent (plaintext) for display on our side.
-            // However, ChatMessageStore is ephemeral (reloaded from disk). We should save the usable version.
-            // But 'messages' array stores ChatMessage which holds 'content' string or 'attachmentData' Data.
-            // I'll leave as is for now, but really we should store plaintext for self.
-            // Actually, for self-sent attachments, we might just want to show "File Sent" and not duplicate data in memory if large.
-            // But user asked for support sending files. Assume small files for now.
-            // To fix this properly, I'd need to pass plaintext payload to finishSendingMessage.
-            // But let's assume for MVP we just store what we have. If it's encrypted, we can't show it to ourselves easily withoutdecrypting? 
-            // Valid point. But for text it's stored in 'content'.
-            
-            messages.append(uiMessage)
-            saveMessages()
-            
+            // Secure Storage: Save local copy
             Task {
-                // Add to queue first (MainActor)
-                let safeMsg = SafeMessage(msgDer: Data(msgDer), firstAttempt: now, id: msgUUID)
-                self.outgoingQueue[msgUUID] = safeMsg
+                var savedPath: String?
+                let dataToSave = plaintextPayload ?? payloadData
                 
-                // Initial Send
-                await multicast.send(data: Data(msgDer))
+                if attachmentName != nil { // It's a file
+                    do {
+                        let ext = attachmentName.map { URL(fileURLWithPath: $0).pathExtension } ?? "dat"
+                        savedPath = try await SecureStorageService.shared.saveEncryptedAttachment(data: dataToSave, extension: ext)
+                    } catch {
+                         print("Failed to save local attachment: \(error)")
+                    }
+                }
                 
-                // Note: We do NOT mark as delivered yet. Only on ACK.
+                await MainActor.run {
+                    let uiMessage = ChatMessage(
+                        id: msgUUID,
+                        content: content,
+                        timestamp: now,
+                        isFromMe: true,
+                        senderName: certificateManager.username,
+                        isDelivered: false,
+                        isEncrypted: wasEncrypted,
+                        attachmentData: attachmentName != nil ? dataToSave : nil,
+                        attachmentMime: originalMime,
+                        attachmentName: attachmentName,
+                        localAttachmentPath: savedPath
+                    )
+                    
+                    self.messages.append(uiMessage)
+                    self.saveMessages()
+                    
+                    // Add to queue
+                    let safeMsg = SafeMessage(msgDer: Data(msgDer), firstAttempt: now, id: msgUUID)
+                    self.outgoingQueue[msgUUID] = safeMsg
+                    
+                    // Initial Send
+                    Task {
+                        await multicast.send(data: Data(msgDer))
+                    }
+                }
             }
         } catch {
             print("Serialization failed: \(error)")

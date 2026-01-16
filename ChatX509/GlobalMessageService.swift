@@ -73,6 +73,9 @@ actor GlobalMessageService {
                 // Only process messages (not presence)
                 guard case .message(let msg) = proto else { continue }
                 
+                // IGNORE ACKs (Type 4) to prevent infinite loops and notification spam
+                if msg.type.rawValue == 4 { continue }
+                
                 // Extract sender
                 let sender = String(decoding: msg.from.bytes, as: UTF8.self)
                 

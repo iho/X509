@@ -9,6 +9,7 @@ import SwiftUI
 import SwiftASN1
 import UniformTypeIdentifiers
 import PhotosUI
+import AVFoundation
 
 struct ChatView: View {
     let user: ChatUser
@@ -22,6 +23,8 @@ struct ChatView: View {
     @FocusState private var isInputFocused: Bool
     
     // Attachment State
+    @StateObject private var voiceRecorder = VoiceRecorder()
+    @State private var isPhotoPickerPresented = false
     @State private var isFilePickerPresented = false
     @State private var isPhotoPickerItem: PhotosPickerItem?
     @State private var selectedAttachmentData: Data?
@@ -152,7 +155,7 @@ struct ChatView: View {
                         Label("File", systemImage: "doc.fill")
                     }
                     
-                    PhotosPicker(selection: $isPhotoPickerItem, matching: .images) {
+                    Button(action: { isPhotoPickerPresented = true }) {
                         Label("Photo", systemImage: "photo.fill")
                     }
                 } label: {
@@ -163,18 +166,16 @@ struct ChatView: View {
                 
                 // Text field
                 HStack {
-                    TextField("Message", text: $messageText, axis: .vertical)
-                        .textFieldStyle(.plain)
-                        .foregroundColor(.primary)
-                        .focused($isInputFocused)
-                        .lineLimit(1...5)
-                    
-                    if messageText.isEmpty {
-                        Button(action: { /* TODO: Voice */ }) {
-                            Image(systemName: "mic.fill")
-                                .foregroundColor(.gray)
-                        }
-                    }
+                    TextField(
+                        voiceRecorder.isRecording ? "Recording Audio..." :
+                        selectedAttachmentData != nil ? "File Selected" : "Message",
+                        text: $messageText, axis: .vertical
+                    )
+                    .textFieldStyle(.plain)
+                    .foregroundColor(.primary)
+                    .focused($isInputFocused)
+                    .lineLimit(1...5)
+                    .disabled(voiceRecorder.isRecording || selectedAttachmentData != nil)
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 10)
@@ -183,105 +184,150 @@ struct ChatView: View {
                         .fill(colorScheme == .dark ? Color.white.opacity(0.1) : Color.black.opacity(0.05))
                 )
                 
-                // Send button
+                // Send / Record button
                 if !messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || selectedAttachmentData != nil {
-                    Button(action: sendMessage) {
-                        Image(systemName: "arrow.up.circle.fill")
-                            .font(.title)
-                            .foregroundStyle(
-                                colorScheme == .dark ?
-                                AnyShapeStyle(LinearGradient(colors: [.blue, .purple], startPoint: .topLeading, endPoint: .bottomTrailing)) :
-                                AnyShapeStyle(Color.blue)
-                            )
-                    }
-                    .transition(.scale.combined(with: .opacity))
-                }
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(.ultraThinMaterial)
-            .animation(.easeInOut(duration: 0.2), value: messageText.isEmpty)
-        }
-    }
-    
-    // MARK: - Toolbar Items
-    private var backButton: some View {
-        Button(action: { dismiss() }) {
-            HStack(spacing: 4) {
-                Image(systemName: "chevron.left")
-                    .font(.body.weight(.semibold))
-            }
-            .foregroundColor(.blue)
-        }
-    }
-    
-    private var userHeader: some View {
-        VStack(spacing: 2) {
-            Text(user.name)
-                .font(.headline)
-                .foregroundColor(.primary)
-            
-            HStack(spacing: 4) {
-                Circle()
-                    .fill(user.isOnline ? Color.green : Color.gray)
-                    .frame(width: 8, height: 8)
-                Text(user.isOnline ? "Online" : "Offline")
-                    .font(.caption)
-                    .foregroundColor(.gray)
-            }
-        }
-    }
-    
-    private var moreButton: some View {
-        Menu {
-            Button(role: .destructive, action: { showDeleteConfirmation = true }) {
-                Label("Delete Chat", systemImage: "trash")
-            }
-            
-            Button(action: { showCertificateSheet = true }) {
-                Label("View Certificate", systemImage: "checkmark.shield")
-            }
-        } label: {
-            Image(systemName: "ellipsis.circle")
-                .font(.title3)
-                .foregroundColor(.gray)
-        }
-        .confirmationDialog("Delete this chat?", isPresented: $showDeleteConfirmation, titleVisibility: .visible) {
-            Button("Delete Chat", role: .destructive) {
-                deleteChat()
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("This will remove \(user.name) from your contacts and delete all messages.")
-        }
-    }
-    
-    private func deleteChat() {
-        ChatUserStore.shared.removeUser(user)
-        dismiss()
-    }
-    
-    // MARK: - Actions
-    private func sendMessage() {
-        let content = messageText.trimmingCharacters(in: .whitespacesAndNewlines)
-        
-        if selectedAttachmentData != nil {
-             // Sending attachment
-             messageStore.sendMessage(
-                 content.isEmpty ? "Sent a file" : content,
-                 attachment: selectedAttachmentData,
-                 attachmentName: selectedAttachmentName,
-                 attachmentMime: selectedAttachmentMime
-             )
-             clearAttachment()
-             messageText = ""
-             return
-        }
-        
-        guard !content.isEmpty else { return }
-        messageStore.sendMessage(content)
-        messageText = ""
-    }
+                     Button(action: sendMessage) {
+                         Image(systemName: "arrow.up.circle.fill")
+                             .font(.title)
+                             .foregroundStyle(
+                                 colorScheme == .dark ?
+                                 AnyShapeStyle(LinearGradient(colors: [.blue, .purple], startPoint: .topLeading, endPoint: .bottomTrailing)) :
+                                 AnyShapeStyle(Color.blue)
+                             )
+                     }
+                     .transition(.scale.combined(with: .opacity))
+                 } else {
+                     // Voice Logic
+                     HStack(spacing: 8) {
+                         if voiceRecorder.isRecording {
+                             Text(formatDuration(voiceRecorder.recordingTime))
+                                 .font(.subheadline.monospacedDigit())
+                                 .foregroundColor(.red)
+                                 .transition(.move(edge: .trailing).combined(with: .opacity))
+                         }
+                         
+                         Button(action: {
+                             if voiceRecorder.isRecording {
+                                 stopRecordingAndSend()
+                             } else {
+                                 voiceRecorder.startRecording()
+                             }
+                         }) {
+                             Image(systemName: voiceRecorder.isRecording ? "stop.circle.fill" : "mic.fill")
+                                 .font(.title)
+                                 .foregroundColor(voiceRecorder.isRecording ? .red : .gray)
+                                 .scaleEffect(voiceRecorder.isRecording ? 1.2 : 1.0)
+                                 .animation(.easeInOut(duration: 0.2), value: voiceRecorder.isRecording)
+                         }
+                     }
+                 }
+             }
+             .padding(.horizontal, 12)
+             .padding(.vertical, 8)
+             .background(.ultraThinMaterial)
+             .animation(.easeInOut(duration: 0.2), value: messageText.isEmpty)
+         }
+         // Photo Picker (Moved out of Menu)
+         .photosPicker(isPresented: $isPhotoPickerPresented, selection: $isPhotoPickerItem, matching: .images)
+     }
+     
+     // MARK: - Toolbar Items
+     private var backButton: some View {
+         Button(action: { dismiss() }) {
+             HStack(spacing: 4) {
+                 Image(systemName: "chevron.left")
+                     .font(.body.weight(.semibold))
+             }
+             .foregroundColor(.blue)
+         }
+     }
+     
+     private var userHeader: some View {
+         VStack(spacing: 2) {
+             Text(user.name)
+                 .font(.headline)
+                 .foregroundColor(.primary)
+             
+             HStack(spacing: 4) {
+                 Circle()
+                 // ... (unchanged)
+                     .fill(user.isOnline ? Color.green : Color.gray)
+                     .frame(width: 8, height: 8)
+                 Text(user.isOnline ? "Online" : "Offline")
+                     .font(.caption)
+                     .foregroundColor(.gray)
+             }
+         }
+     }
+     
+     private var moreButton: some View {
+         Menu {
+             Button(role: .destructive, action: { showDeleteConfirmation = true }) {
+                 Label("Delete Chat", systemImage: "trash")
+             }
+             
+             Button(action: { showCertificateSheet = true }) {
+                 Label("View Certificate", systemImage: "checkmark.shield")
+             }
+         } label: {
+             Image(systemName: "ellipsis.circle")
+                 .font(.title3)
+                 .foregroundColor(.gray)
+         }
+         // ... (confirmation dialog unchanged)
+         .confirmationDialog("Delete this chat?", isPresented: $showDeleteConfirmation, titleVisibility: .visible) {
+             Button("Delete Chat", role: .destructive) {
+                 deleteChat()
+             }
+             Button("Cancel", role: .cancel) {}
+         } message: {
+             Text("This will remove \(user.name) from your contacts and delete all messages.")
+         }
+     }
+     
+     private func deleteChat() {
+         ChatUserStore.shared.removeUser(user)
+         dismiss()
+     }
+     
+     // MARK: - Actions
+     private func sendMessage() {
+         let content = messageText.trimmingCharacters(in: .whitespacesAndNewlines)
+         
+         if selectedAttachmentData != nil {
+              // Sending attachment
+              messageStore.sendMessage(
+                  content.isEmpty ? "Sent a file" : content,
+                  attachment: selectedAttachmentData,
+                  attachmentName: selectedAttachmentName,
+                  attachmentMime: selectedAttachmentMime
+              )
+              clearAttachment()
+              messageText = ""
+              return
+         }
+         
+         guard !content.isEmpty else { return }
+         messageStore.sendMessage(content)
+         messageText = ""
+     }
+     
+     private func stopRecordingAndSend() {
+         if let (url, duration) = voiceRecorder.stopRecording() {
+             do {
+                 let data = try Data(contentsOf: url)
+                 let fileName = url.lastPathComponent
+                 messageStore.sendMessage(
+                    "Voice Message (\(Int(duration))s)",
+                    attachment: data,
+                    attachmentName: fileName,
+                    attachmentMime: "audio/m4a"
+                 )
+             } catch {
+                 print("Failed to read voice msg: \(error)")
+             }
+         }
+     }
     
     private func handleFileSelection(_ result: Result<[URL], Error>) {
         switch result {
@@ -316,6 +362,14 @@ struct ChatView: View {
             scrollProxy?.scrollTo(lastMessage.id, anchor: .bottom)
         }
     }
+    
+    private func formatDuration(_ duration: TimeInterval) -> String {
+        let formatter = DateComponentsFormatter()
+        formatter.allowedUnits = [.minute, .second]
+        formatter.unitsStyle = .positional
+        formatter.zeroFormattingBehavior = .pad
+        return formatter.string(from: duration) ?? "00:00"
+    }
 }
 
 // MARK: - Message Bubble View
@@ -323,45 +377,103 @@ struct MessageBubbleView: View {
     let message: ChatMessage
     @Environment(\.colorScheme) var colorScheme
     
+    @State private var loadedAttachmentData: Data?
+    @State private var loadingError: String?
+    @State private var isLoading = false
+    
+    private var displayData: Data? {
+        message.attachmentData ?? loadedAttachmentData
+    }
+    
     var body: some View {
         HStack {
             if message.isFromMe { Spacer(minLength: 60) }
             
             VStack(alignment: message.isFromMe ? .trailing : .leading, spacing: 4) {
-                if let attachmentData = message.attachmentData, let mime = message.attachmentMime {
-                    if mime.hasPrefix("image/"), let uiImage = UIImage(data: attachmentData) {
-                         Image(uiImage: uiImage)
-                            .resizable()
-                            .scaledToFit()
-                            .frame(maxWidth: 200)
-                            .cornerRadius(12)
-                    } else {
-                        // Generic File
-                        HStack(spacing: 12) {
-                            Image(systemName: "doc.fill")
-                                .font(.title)
-                                .foregroundColor(.white)
-                            
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(message.attachmentName ?? "Unknown File")
-                                    .font(.headline)
-                                    .foregroundColor(.white)
-                                    .lineLimit(1)
+                if let mime = message.attachmentMime {
+                    if let attachmentData = displayData {
+                        // --- Attachment Content ---
+                        if mime.hasPrefix("image/"), let uiImage = UIImage(data: attachmentData) {
+                             Image(uiImage: uiImage)
+                                .resizable()
+                                .scaledToFit()
+                                .frame(maxWidth: 200)
+                                .cornerRadius(12)
+                        } else if mime.hasPrefix("audio/") {
+                            // Audio Message
+                            AudioMessageBubble(data: attachmentData, duration: 0, isFromMe: message.isFromMe)
+                        } else {
+                            // Generic File
+                            HStack(spacing: 12) {
+                                Image(systemName: "doc.fill")
+                                    .font(.title)
+                                    .foregroundColor(message.isFromMe ? .white : .blue)
                                 
-                                Text(ByteCountFormatter.string(fromByteCount: Int64(attachmentData.count), countStyle: .file))
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(message.attachmentName ?? "Unknown File")
+                                        .font(.headline)
+                                        .foregroundColor(message.isFromMe ? .white : .primary)
+                                        .lineLimit(1)
+                                    
+                                    Text(ByteCountFormatter.string(fromByteCount: Int64(attachmentData.count), countStyle: .file))
+                                        .font(.caption)
+                                        .foregroundColor(message.isFromMe ? .white.opacity(0.8) : .secondary)
+                                }
+                            }
+                            .padding(12)
+                            .background(bubbleBackground)
+                            .onTapGesture {
+                                 shareFile(data: attachmentData, name: message.attachmentName ?? "file")
+                            }
+                        }
+                    } else {
+                        // --- Loading / Error State ---
+                        HStack(spacing: 8) {
+                            if let error = loadingError {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .foregroundColor(.orange)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Failed to load")
+                                        .font(.caption.bold())
+                                    Text(error)
+                                        .font(.caption2)
+                                        .lineLimit(1)
+                                }
+                                
+                                // Retry Button
+                                Button(action: {
+                                    Task { await loadAttachment() }
+                                }) {
+                                    Image(systemName: "arrow.clockwise")
+                                        .foregroundColor(message.isFromMe ? .white : .blue)
+                                }
+                                
+                                // Delete/Remove Button
+                                Button(action: {
+                                    Task { await deleteAttachment() }
+                                }) {
+                                    Image(systemName: "trash.fill")
+                                        .foregroundColor(.red)
+                                        .font(.caption)
+                                }
+                            } else {
+                                ProgressView()
+                                    .tint(message.isFromMe ? .white : .primary)
+                                Text("Decrypting...")
                                     .font(.caption)
-                                    .foregroundColor(.white.opacity(0.8))
+                                    .foregroundColor(message.isFromMe ? .white : .primary)
                             }
                         }
                         .padding(12)
-                        .background(Color.black.opacity(0.2))
-                        .cornerRadius(12)
-                        .onTapGesture {
-                             // Share Sheet
-                             shareFile(data: attachmentData, name: message.attachmentName ?? "file")
+                        .background(bubbleBackground)
+                        .task {
+                            if loadedAttachmentData == nil && loadingError == nil {
+                                await loadAttachment()
+                            }
                         }
                     }
                 } else {
+                    // --- Text Content ---
                     Text(message.content)
                         .font(.body)
                         .foregroundColor(message.isFromMe ? .white : .primary)
@@ -394,6 +506,51 @@ struct MessageBubbleView: View {
             if !message.isFromMe { Spacer(minLength: 60) }
         }
         .padding(.vertical, 2)
+    }
+    
+    private func loadAttachment() async {
+        guard !isLoading else { return }
+        guard let path = message.localAttachmentPath else {
+            // Check if we previously deleted it (state)
+            if loadingError == "Attachment removed" { return }
+            
+            await MainActor.run { loadingError = "Missing file path" }
+            return
+        }
+        
+        await MainActor.run {
+            isLoading = true
+            loadingError = nil
+        }
+        
+        do {
+            let data = try await SecureStorageService.shared.loadEncryptedAttachment(filename: path)
+            await MainActor.run {
+                withAnimation {
+                    self.loadedAttachmentData = data
+                    self.isLoading = false
+                }
+            }
+        } catch {
+            await MainActor.run {
+                print("Failed to load/decrypt attachment: \(error)")
+                self.loadingError = "Decryption failed"
+                self.isLoading = false
+            }
+        }
+    }
+    
+    private func deleteAttachment() async {
+        guard let path = message.localAttachmentPath else { return }
+        
+        await SecureStorageService.shared.deleteAttachment(filename: path)
+        
+        await MainActor.run {
+            withAnimation {
+                self.loadingError = "Attachment removed"
+                self.isLoading = false
+            }
+        }
     }
     
     private var bubbleBackground: some View {
@@ -434,6 +591,86 @@ struct MessageBubbleView: View {
         if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
            let rootVC = windowScene.windows.first?.rootViewController {
             rootVC.present(av, animated: true, completion: nil)
+        }
+    }
+}
+
+// MARK: - Audio Bubble
+struct AudioMessageBubble: View {
+    let data: Data
+    let duration: TimeInterval
+    let isFromMe: Bool
+    @State private var isPlaying = false
+    @State private var audioPlayer: AVAudioPlayer?
+    @Environment(\.colorScheme) var colorScheme
+    
+    var body: some View {
+        HStack(spacing: 12) {
+            Button(action: {
+                if isPlaying {
+                    audioPlayer?.stop()
+                    isPlaying = false
+                } else {
+                    playAudio()
+                }
+            }) {
+                Image(systemName: isPlaying ? "pause.circle.fill" : "play.circle.fill")
+                    .font(.title)
+                    .foregroundColor(isFromMe ? .white : .blue)
+            }
+            
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Voice Message")
+                    .font(.headline)
+                    .foregroundColor(isFromMe ? .white : .primary)
+                
+                Text(ByteCountFormatter.string(fromByteCount: Int64(data.count), countStyle: .file))
+                   .font(.caption)
+                   .foregroundColor(isFromMe ? .white.opacity(0.8) : .secondary)
+            }
+        }
+        .padding(12)
+        .background(bubbleBackground)
+    }
+    
+    private var bubbleBackground: some View {
+        Group {
+            if isFromMe {
+                if colorScheme == .dark {
+                    LinearGradient(
+                        colors: [Color.blue, Color.purple.opacity(0.8)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                    .clipShape(BubbleShape(isFromMe: true))
+                } else {
+                    Color.blue
+                        .clipShape(BubbleShape(isFromMe: true))
+                }
+            } else {
+                (colorScheme == .dark ? Color.white.opacity(0.15) : Color.white)
+                    .clipShape(BubbleShape(isFromMe: false))
+                    .shadow(color: .black.opacity(0.05), radius: 1, x: 0, y: 1)
+            }
+        }
+    }
+    
+    private func playAudio() {
+        do {
+            try AVAudioSession.sharedInstance().setCategory(.playback)
+            try AVAudioSession.sharedInstance().setActive(true)
+            
+            audioPlayer = try AVAudioPlayer(data: data)
+            audioPlayer?.delegate = nil // TODO: Handle finish
+            audioPlayer?.play()
+            isPlaying = true
+            
+            // Simple timer to reset state
+            Timer.scheduledTimer(withTimeInterval: audioPlayer?.duration ?? 0, repeats: false) { _ in
+                isPlaying = false
+            }
+        } catch {
+            print("Audio playback failed: \(error)")
         }
     }
 }

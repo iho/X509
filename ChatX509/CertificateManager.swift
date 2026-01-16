@@ -86,7 +86,7 @@ final class CertificateManager: ObservableObject {
             } else {
                 // Identity loaded, start rotation if it's not an imported key
                 if !isImportedKey && !username.isEmpty {
-                    startRotationTimer()
+                    // startRotationTimer() // Disabled for stable storage
                 }
             }
         } else if !username.isEmpty {
@@ -198,9 +198,16 @@ final class CertificateManager: ObservableObject {
     
     private func startRotationTimer() {
         rotationTimer?.invalidate()
+        // Temporary: Disable auto-rotation to ensure that local file storage remains decryptable.
+        // If we rotate, the Serial Number changes, and stored encrypted files (which expect the old Serial Number)
+        // become unreadable unless we migrate them or keep old keys.
+        // For MVP Secure Storage: Identity is stable.
+        
+        /*
         rotationTimer = Timer.scheduledTimer(withTimeInterval: 1800, repeats: true) { [weak self] _ in
             self?.generateNewIdentity()
         }
+         */
     }
     
     // MARK: - Identity Import/Export
