@@ -97,6 +97,20 @@ actor GlobalMessageService {
                 var payloadData = Data(contentOctet.bytes)
                 var wasEncrypted = false
                 
+                // Parse Metadata (Features) regarding file properties
+                var finalMime = mimeType
+                var finalFilename: String?
+                
+                for feature in file.data {
+                     let key = String(decoding: feature.key.bytes, as: UTF8.self)
+                     let val = String(decoding: feature.value.bytes, as: UTF8.self)
+                     if key == "filename" {
+                         finalFilename = val
+                     } else if key == "original-mime" {
+                         finalMime = val
+                     }
+                }
+                
                 // Decrypt if CMS encrypted
                 if mimeType == "application/cms" {
                     if let signingKey = await MainActor.run(body: { certificateManager.currentPrivateKey }) {
@@ -112,7 +126,17 @@ actor GlobalMessageService {
                     }
                 }
                 
-                let messageText = String(decoding: payloadData, as: UTF8.self)
+                // Fallback for missing metadata on encrypted files
+                if wasEncrypted && finalMime == "application/cms" && finalFilename == nil {
+                     finalMime = "text/plain"
+                }
+
+                let messageText: String
+                if finalMime.hasPrefix("text/") {
+                     messageText = String(decoding: payloadData, as: UTF8.self)
+                } else {
+                     messageText = finalFilename != nil ? "Sent a file: \(finalFilename!)" : "Sent a file"
+                }
                 
                 // Extract message ID
                 let idData = Data(msg.id.bytes)
@@ -131,6 +155,9 @@ actor GlobalMessageService {
                 // Send local notification
                 await sendLocalNotification(from: sender, message: messageText)
                 
+                // Send ACK (Read Receipt)
+                await sendAck(for: msg.id, sender: sender)
+                
                 print("[GlobalMessage] Received message from \(sender): \(messageText.prefix(50))...")
                 
             } catch {
@@ -138,6 +165,65 @@ actor GlobalMessageService {
                 continue
             }
         }
+    }
+    
+    // MARK: - ACK Sending
+    private func sendAck(for originId: ASN1OctetString, sender: String) async {
+        guard let username = await MainActor.run(body: { certificateManager.username }).data(using: .utf8),
+              let privateKey = await MainActor.run(body: { certificateManager.currentPrivateKey }) else { return }
+        
+        // Construct ACK Message
+        var idBytes = [UInt8](repeating: 0, count: 16)
+        let _ = SecRandomCopyBytes(kSecRandomDefault, 16, &idBytes)
+        let idOctet = ASN1OctetString(contentBytes: ArraySlice(idBytes))
+        
+        let fromOctet = ASN1OctetString(contentBytes: ArraySlice(username))
+        let toOctet = ASN1OctetString(contentBytes: ArraySlice(sender.utf8))
+        
+        let emptyOctet = ASN1OctetString(contentBytes: [])
+        
+        // Minimal file
+        let dummyFile = CHAT_FileDesc(
+            id: emptyOctet,
+            mime: ASN1OctetString(contentBytes: ArraySlice("text/plain".utf8)),
+            payload: try! ASN1Any(derEncoded: [0x05, 0x00]), // NULL
+            parentid: emptyOctet,
+            data: []
+        )
+        
+        // Sign
+         var seqSerializer = DER.Serializer()
+         try! seqSerializer.serializeSequenceOf([dummyFile])
+         let filesDer = seqSerializer.serializedBytes
+         var tbsData = Data(idBytes)
+         tbsData.append(Data(fromOctet.bytes))
+         tbsData.append(Data(toOctet.bytes))
+         tbsData.append(contentsOf: filesDer)
+         
+        guard let signature = try? privateKey.signature(for: tbsData) else { return }
+        let sigOctet = ASN1OctetString(contentBytes: ArraySlice(signature.rawRepresentation))
+        
+        let ackMsg = CHAT_Message(
+            id: idOctet,
+            feed_id: .p2p(CHAT_P2P(src: fromOctet, dst: toOctet)),
+            signature: sigOctet,
+            from: fromOctet,
+            to: toOctet,
+            created: ArraySlice(String(Int64(Date().timeIntervalSince1970 * 1000)).utf8),
+            files: [dummyFile],
+            type: CHAT_MessageType(rawValue: 4), // .read
+            link: [],
+            seenby: emptyOctet,
+            repliedby: originId, // Reference the received message ID
+            mentioned: [],
+            status: CHAT_MessageStatus(rawValue: 0)
+        )
+        
+        let protocolMsg = CHAT_CHATProtocol.message(ackMsg)
+        var msgSerializer = DER.Serializer()
+        try! msgSerializer.serialize(protocolMsg)
+        
+        await multicast.send(data: Data(msgSerializer.serializedBytes))
     }
     
     @MainActor

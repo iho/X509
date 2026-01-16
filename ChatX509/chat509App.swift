@@ -25,6 +25,8 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
 struct chat509App: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @AppStorage("isDarkMode") private var isDarkMode = true
+    @Environment(\.scenePhase) var scenePhase
+    @State private var backgroundTaskID: UIBackgroundTaskIdentifier = .invalid
     
     init() {
         // Start global message listener
@@ -37,6 +39,22 @@ struct chat509App: App {
         WindowGroup {
             ContentView()
                 .preferredColorScheme(isDarkMode ? .dark : .light)
+                .onChange(of: scenePhase) { newPhase in
+                    if newPhase == .background {
+                        // Start background task
+                        backgroundTaskID = UIApplication.shared.beginBackgroundTask(withName: "FinishNetworkParams") {
+                             // Expiration handler
+                             UIApplication.shared.endBackgroundTask(backgroundTaskID)
+                             backgroundTaskID = .invalid
+                        }
+                    } else if newPhase == .active {
+                        // End background task if any
+                        if backgroundTaskID != .invalid {
+                            UIApplication.shared.endBackgroundTask(backgroundTaskID)
+                            backgroundTaskID = .invalid
+                        }
+                    }
+                }
         }
     }
 }

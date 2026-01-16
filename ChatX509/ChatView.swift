@@ -7,6 +7,8 @@
 
 import SwiftUI
 import SwiftASN1
+import UniformTypeIdentifiers
+import PhotosUI
 
 struct ChatView: View {
     let user: ChatUser
@@ -18,6 +20,13 @@ struct ChatView: View {
     @State private var showDeleteConfirmation = false
     @State private var showCertificateSheet = false
     @FocusState private var isInputFocused: Bool
+    
+    // Attachment State
+    @State private var isFilePickerPresented = false
+    @State private var isPhotoPickerItem: PhotosPickerItem?
+    @State private var selectedAttachmentData: Data?
+    @State private var selectedAttachmentName: String?
+    @State private var selectedAttachmentMime: String?
     
     init(user: ChatUser) {
         self.user = user
@@ -67,6 +76,24 @@ struct ChatView: View {
             CertificateDetailSheet(user: user)
         }
         // .toolbarColorScheme(.dark, for: .navigationBar) // unavailable on macOS
+        .fileImporter(
+            isPresented: $isFilePickerPresented,
+            allowedContentTypes: [.data],
+            allowsMultipleSelection: false
+        ) { result in
+             handleFileSelection(result)
+        }
+        .onChange(of: isPhotoPickerItem) { newItem in
+            Task {
+                if let data = try? await newItem?.loadTransferable(type: Data.self) {
+                    await MainActor.run {
+                        selectedAttachmentData = data
+                        selectedAttachmentName = "image.jpg" // Default, maybe enhance later
+                        selectedAttachmentMime = "image/jpeg"
+                    }
+                }
+            }
+        }
     }
     
     // MARK: - Messages Scroll
@@ -94,54 +121,87 @@ struct ChatView: View {
     
     // MARK: - Message Input
     private var messageInputBar: some View {
-        HStack(spacing: 12) {
-            // Attachment button
-            Button(action: { /* TODO */ }) {
-                Image(systemName: "plus.circle.fill")
-                    .font(.title2)
-                    .foregroundColor(.gray)
-            }
-            
-            // Text field
-            HStack {
-                TextField("Message", text: $messageText, axis: .vertical)
-                    .textFieldStyle(.plain)
-                    .foregroundColor(.primary)
-                    .focused($isInputFocused)
-                    .lineLimit(1...5)
-                
-                if messageText.isEmpty {
-                    Button(action: { /* TODO: Voice */ }) {
-                        Image(systemName: "mic.fill")
+        VStack(spacing: 0) {
+            // Attachment Preview
+            if let name = selectedAttachmentName {
+                HStack {
+                    Image(systemName: "paperclip")
+                        .font(.caption)
+                        .foregroundColor(.blue)
+                    Text(name)
+                        .font(.caption)
+                        .lineLimit(1)
+                        .foregroundColor(.primary)
+                    
+                    Spacer()
+                    
+                    Button(action: clearAttachment) {
+                        Image(systemName: "xmark.circle.fill")
                             .foregroundColor(.gray)
                     }
                 }
+                .padding(12)
+                .background(.ultraThinMaterial)
+                .transition(.move(edge: .bottom))
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            .background(
-                RoundedRectangle(cornerRadius: 22)
-                    .fill(colorScheme == .dark ? Color.white.opacity(0.1) : Color.black.opacity(0.05))
-            )
             
-            // Send button
-            if !messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Button(action: sendMessage) {
-                    Image(systemName: "arrow.up.circle.fill")
-                        .font(.title)
-                        .foregroundStyle(
-                            colorScheme == .dark ?
-                            AnyShapeStyle(LinearGradient(colors: [.blue, .purple], startPoint: .topLeading, endPoint: .bottomTrailing)) :
-                            AnyShapeStyle(Color.blue)
-                        )
+            HStack(spacing: 12) {
+                // Attachment button
+                Menu {
+                    Button(action: { isFilePickerPresented = true }) {
+                        Label("File", systemImage: "doc.fill")
+                    }
+                    
+                    PhotosPicker(selection: $isPhotoPickerItem, matching: .images) {
+                        Label("Photo", systemImage: "photo.fill")
+                    }
+                } label: {
+                    Image(systemName: "plus.circle.fill")
+                        .font(.title2)
+                        .foregroundColor(.gray)
                 }
-                .transition(.scale.combined(with: .opacity))
+                
+                // Text field
+                HStack {
+                    TextField("Message", text: $messageText, axis: .vertical)
+                        .textFieldStyle(.plain)
+                        .foregroundColor(.primary)
+                        .focused($isInputFocused)
+                        .lineLimit(1...5)
+                    
+                    if messageText.isEmpty {
+                        Button(action: { /* TODO: Voice */ }) {
+                            Image(systemName: "mic.fill")
+                                .foregroundColor(.gray)
+                        }
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .background(
+                    RoundedRectangle(cornerRadius: 22)
+                        .fill(colorScheme == .dark ? Color.white.opacity(0.1) : Color.black.opacity(0.05))
+                )
+                
+                // Send button
+                if !messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || selectedAttachmentData != nil {
+                    Button(action: sendMessage) {
+                        Image(systemName: "arrow.up.circle.fill")
+                            .font(.title)
+                            .foregroundStyle(
+                                colorScheme == .dark ?
+                                AnyShapeStyle(LinearGradient(colors: [.blue, .purple], startPoint: .topLeading, endPoint: .bottomTrailing)) :
+                                AnyShapeStyle(Color.blue)
+                            )
+                    }
+                    .transition(.scale.combined(with: .opacity))
+                }
             }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(.ultraThinMaterial)
+            .animation(.easeInOut(duration: 0.2), value: messageText.isEmpty)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(.ultraThinMaterial)
-        .animation(.easeInOut(duration: 0.2), value: messageText.isEmpty)
     }
     
     // MARK: - Toolbar Items
@@ -204,10 +264,50 @@ struct ChatView: View {
     // MARK: - Actions
     private func sendMessage() {
         let content = messageText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !content.isEmpty else { return }
         
+        if selectedAttachmentData != nil {
+             // Sending attachment
+             messageStore.sendMessage(
+                 content.isEmpty ? "Sent a file" : content,
+                 attachment: selectedAttachmentData,
+                 attachmentName: selectedAttachmentName,
+                 attachmentMime: selectedAttachmentMime
+             )
+             clearAttachment()
+             messageText = ""
+             return
+        }
+        
+        guard !content.isEmpty else { return }
         messageStore.sendMessage(content)
         messageText = ""
+    }
+    
+    private func handleFileSelection(_ result: Result<[URL], Error>) {
+        switch result {
+        case .success(let urls):
+            guard let url = urls.first else { return }
+            guard url.startAccessingSecurityScopedResource() else { return }
+            defer { url.stopAccessingSecurityScopedResource() }
+            
+            do {
+                let data = try Data(contentsOf: url)
+                selectedAttachmentData = data
+                selectedAttachmentName = url.lastPathComponent
+                selectedAttachmentMime = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
+            } catch {
+                print("Failed to read file: \(error)")
+            }
+        case .failure(let error):
+            print("Import failed: \(error)")
+        }
+    }
+    
+    private func clearAttachment() {
+        selectedAttachmentData = nil
+        selectedAttachmentName = nil
+        selectedAttachmentMime = nil
+        isPhotoPickerItem = nil
     }
     
     private func scrollToBottom() {
@@ -228,12 +328,47 @@ struct MessageBubbleView: View {
             if message.isFromMe { Spacer(minLength: 60) }
             
             VStack(alignment: message.isFromMe ? .trailing : .leading, spacing: 4) {
-                Text(message.content)
-                    .font(.body)
-                    .foregroundColor(message.isFromMe ? .white : .primary)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .background(bubbleBackground)
+                if let attachmentData = message.attachmentData, let mime = message.attachmentMime {
+                    if mime.hasPrefix("image/"), let uiImage = UIImage(data: attachmentData) {
+                         Image(uiImage: uiImage)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(maxWidth: 200)
+                            .cornerRadius(12)
+                    } else {
+                        // Generic File
+                        HStack(spacing: 12) {
+                            Image(systemName: "doc.fill")
+                                .font(.title)
+                                .foregroundColor(.white)
+                            
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(message.attachmentName ?? "Unknown File")
+                                    .font(.headline)
+                                    .foregroundColor(.white)
+                                    .lineLimit(1)
+                                
+                                Text(ByteCountFormatter.string(fromByteCount: Int64(attachmentData.count), countStyle: .file))
+                                    .font(.caption)
+                                    .foregroundColor(.white.opacity(0.8))
+                            }
+                        }
+                        .padding(12)
+                        .background(Color.black.opacity(0.2))
+                        .cornerRadius(12)
+                        .onTapGesture {
+                             // Share Sheet
+                             shareFile(data: attachmentData, name: message.attachmentName ?? "file")
+                        }
+                    }
+                } else {
+                    Text(message.content)
+                        .font(.body)
+                        .foregroundColor(message.isFromMe ? .white : .primary)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .background(bubbleBackground)
+                }
                 
                 HStack(spacing: 4) {
                     // Encryption indicator
@@ -287,6 +422,19 @@ struct MessageBubbleView: View {
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm"
         return formatter.string(from: date)
+    }
+    
+    private func shareFile(data: Data, name: String) {
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(name)
+        try? data.write(to: tempURL)
+        
+        let av = UIActivityViewController(activityItems: [tempURL], applicationActivities: nil)
+        
+        // Find top controller to present
+        if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+           let rootVC = windowScene.windows.first?.rootViewController {
+            rootVC.present(av, animated: true, completion: nil)
+        }
     }
 }
 
