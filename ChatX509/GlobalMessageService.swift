@@ -135,10 +135,16 @@ actor GlobalMessageService {
                 }
 
                 let messageText: String
-                if finalMime.hasPrefix("text/") {
+                let attachmentData: Data?
+                // Fix: Properly distinguish between text messages and files
+                let isText = finalMime.hasPrefix("text/") && finalFilename == nil
+                
+                if isText {
                      messageText = String(decoding: payloadData, as: UTF8.self)
+                     attachmentData = nil
                 } else {
                      messageText = finalFilename != nil ? "Sent a file: \(finalFilename!)" : "Sent a file"
+                     attachmentData = payloadData
                 }
                 
                 // Extract message ID
@@ -152,7 +158,15 @@ actor GlobalMessageService {
                 
                 // Update user in store with last message and persist to chat
                 await MainActor.run {
-                    updateUserWithMessage(sender: sender, message: messageText, msgId: msgId, wasEncrypted: wasEncrypted)
+                    updateUserWithMessage(
+                        sender: sender,
+                        message: messageText,
+                        msgId: msgId,
+                        wasEncrypted: wasEncrypted,
+                        attachmentData: attachmentData,
+                        attachmentMime: isText ? nil : finalMime,
+                        attachmentName: finalFilename
+                    )
                 }
                 
                 // Send local notification
@@ -230,7 +244,15 @@ actor GlobalMessageService {
     }
     
     @MainActor
-    private func updateUserWithMessage(sender: String, message: String, msgId: UUID, wasEncrypted: Bool) {
+    private func updateUserWithMessage(
+        sender: String,
+        message: String,
+        msgId: UUID,
+        wasEncrypted: Bool,
+        attachmentData: Data? = nil,
+        attachmentMime: String? = nil,
+        attachmentName: String? = nil
+    ) {
         var user: ChatUser
         
         if let index = userStore.users.firstIndex(where: { $0.name == sender }) {
@@ -254,7 +276,48 @@ actor GlobalMessageService {
             userStore.users.append(user)
         }
         
+        // Save attachment to disk if present
+        // GlobalMessageService receives RAW data (decrypted but in memory)
+        // We need to save it via SecureStorageService locally if we want it persistent
+        var savedPath: String?
+        if let data = attachmentData, attachmentName != nil {
+             // For received files, we should save them immediately
+             Task {
+                 do {
+                     let ext = attachmentName.map { URL(fileURLWithPath: $0).pathExtension } ?? "dat"
+                     let path = try await SecureStorageService.shared.saveEncryptedAttachment(data: data, extension: ext)
+                     
+                     await MainActor.run {
+                         // Update the message in storage with the path
+                         // We have to re-save the message.
+                         // This is tricky because we generate ChatMessage below synchronously.
+                         // Let's defer functionality: Save file synchronously? No.
+                         // We will update the ChatMessage after saving.
+                         
+                         var updatedMsg = ChatMessage(
+                             id: msgId,
+                             content: message,
+                             timestamp: Date(),
+                             isFromMe: false,
+                             senderName: sender,
+                             isDelivered: true,
+                             isRead: false,
+                             isEncrypted: wasEncrypted,
+                             attachmentData: nil, // Don't store data in JSON
+                             attachmentMime: attachmentMime,
+                             attachmentName: attachmentName,
+                             localAttachmentPath: path
+                         )
+                         ChatMessageStore.saveMessageToChat(userId: user.id, message: updatedMsg)
+                     }
+                 } catch {
+                     print("Failed to save received attachment: \(error)")
+                 }
+             }
+        }
+        
         // Save message to the chat's storage so it appears when chat is opened
+        // Initial save (without path if pending)
         let chatMessage = ChatMessage(
             id: msgId,
             content: message,
@@ -263,7 +326,11 @@ actor GlobalMessageService {
             senderName: sender,
             isDelivered: true,
             isRead: false,
-            isEncrypted: wasEncrypted
+            isEncrypted: wasEncrypted,
+            attachmentData: nil,
+            attachmentMime: attachmentMime,
+            attachmentName: attachmentName,
+            localAttachmentPath: nil // Will be updated by Task above if attachment exists
         )
         ChatMessageStore.saveMessageToChat(userId: user.id, message: chatMessage)
     }

@@ -328,7 +328,9 @@ final class ChatMessageStore: ObservableObject {
                         isDelivered: false,
                         isEncrypted: wasEncrypted,
                         attachmentData: attachmentName != nil ? dataToSave : nil,
-                        attachmentMime: originalMime,
+                        // Fix: Only set attachmentMime if there is an attachment (name is present).
+                        // Otherwise it's a regular text message, and keeping mime causes UI to think it's a missing file.
+                        attachmentMime: attachmentName != nil ? originalMime : nil,
                         attachmentName: attachmentName,
                         localAttachmentPath: savedPath
                     )
@@ -435,7 +437,10 @@ final class ChatMessageStore: ObservableObject {
                     let text: String
                     let attachmentData: Data?
                     
-                    if finalMime.hasPrefix("text/") {
+                    // Fix: Properly distinguish between text messages and files
+                    let isText = finalMime.hasPrefix("text/") && finalFilename == nil
+                    
+                    if isText {
                          text = String(decoding: payloadData, as: UTF8.self)
                          attachmentData = nil
                     } else {
@@ -476,7 +481,7 @@ final class ChatMessageStore: ObservableObject {
                             isRead: true,
                             isEncrypted: wasEncrypted,
                             attachmentData: attachmentData,
-                            attachmentMime: finalMime,
+                            attachmentMime: isText ? nil : finalMime,
                             attachmentName: finalFilename
                         )
                         self.receiveMessage(uiMessage)
