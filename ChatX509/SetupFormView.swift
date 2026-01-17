@@ -20,7 +20,7 @@ struct SetupFormView: View {
     var onConnect: (() -> Void)?
     
     var body: some View {
-        NavigationStack {
+        AnyNavigationStack {
             ZStack {
                 // Background gradient
                 // Background gradient
@@ -152,7 +152,7 @@ struct SetupFormView: View {
     }
     
     private var quickGenerateSheet: some View {
-        NavigationStack {
+        AnyNavigationStack {
             ZStack {
                 if colorScheme == .dark {
                     Color(red: 0.1, green: 0.1, blue: 0.2).ignoresSafeArea()
@@ -195,7 +195,7 @@ struct SetupFormView: View {
                 }
             }
         }
-        .presentationDetents([.medium])
+        .compatPresentationDetents()
     }
     
     // MARK: - Header

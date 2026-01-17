@@ -26,10 +26,14 @@ struct ChatView: View {
     @StateObject private var voiceRecorder = VoiceRecorder()
     @State private var isPhotoPickerPresented = false
     @State private var isFilePickerPresented = false
-    @State private var isPhotoPickerItem: PhotosPickerItem?
+
     @State private var selectedAttachmentData: Data?
     @State private var selectedAttachmentName: String?
     @State private var selectedAttachmentMime: String?
+    
+    // Image Preview State
+    @State private var previewImage: UIImage?
+    @State private var isPreviewingImage = false
     
     init(user: ChatUser) {
         self.user = user
@@ -69,7 +73,7 @@ struct ChatView: View {
             }
         }
         #if os(macOS)
-        .toolbarBackground(.ultraThinMaterial, for: .windowToolbar)
+        .compatToolbarBackground(.ultraThinMaterial, for: .windowToolbar)
         #endif
         .onAppear {
             // Mark messages as read when opening chat
@@ -78,7 +82,7 @@ struct ChatView: View {
         .sheet(isPresented: $showCertificateSheet) {
             CertificateDetailSheet(user: user)
         }
-        // .toolbarColorScheme(.dark, for: .navigationBar) // unavailable on macOS
+        // .compatToolbarColorScheme(.dark, for: .navigationBar) // unavailable on macOS
         .fileImporter(
             isPresented: $isFilePickerPresented,
             allowedContentTypes: [.data],
@@ -86,15 +90,17 @@ struct ChatView: View {
         ) { result in
              handleFileSelection(result)
         }
-        .onChange(of: isPhotoPickerItem) { newItem in
-            Task {
-                if let data = try? await newItem?.loadTransferable(type: Data.self) {
-                    await MainActor.run {
-                        selectedAttachmentData = data
-                        selectedAttachmentName = "image.jpg" // Default, maybe enhance later
-                        selectedAttachmentMime = "image/jpeg"
-                    }
-                }
+        .onChange(of: selectedAttachmentData) { newData in
+            if newData != nil && selectedAttachmentName == nil {
+                // Default logic if name not set (e.g. from photo picker)
+                selectedAttachmentName = "image.jpg"
+                selectedAttachmentMime = "image/jpeg"
+            }
+        }
+        // Image Preview Modal
+        .fullScreenCover(isPresented: $isPreviewingImage) {
+            if let image = previewImage {
+                ImagePreviewView(image: image)
             }
         }
     }
@@ -105,7 +111,10 @@ struct ChatView: View {
             ScrollView {
                 LazyVStack(spacing: 4) {
                     ForEach(messageStore.messages) { message in
-                        MessageBubbleView(message: message)
+                        MessageBubbleView(message: message, onImageTapped: { image in
+                            self.previewImage = image
+                            self.isPreviewingImage = true
+                        })
                             .id(message.id)
                     }
                 }
@@ -166,15 +175,14 @@ struct ChatView: View {
                 
                 // Text field
                 HStack {
-                    TextField(
-                        voiceRecorder.isRecording ? "Recording Audio..." :
+                    MultiLineTextField(
+                        placeholder: voiceRecorder.isRecording ? "Recording Audio..." :
                         selectedAttachmentData != nil ? "File Selected" : "Message",
-                        text: $messageText, axis: .vertical
+                        text: $messageText,
+                        focused: $isInputFocused
                     )
-                    .textFieldStyle(.plain)
                     .foregroundColor(.primary)
-                    .focused($isInputFocused)
-                    .lineLimit(1...5)
+                    //.lineLimit(1...5) // MultiLineTextField handles growing
                     .disabled(voiceRecorder.isRecording || selectedAttachmentData != nil)
                 }
                 .padding(.horizontal, 16)
@@ -228,7 +236,7 @@ struct ChatView: View {
              .animation(.easeInOut(duration: 0.2), value: messageText.isEmpty)
          }
          // Photo Picker (Moved out of Menu)
-         .photosPicker(isPresented: $isPhotoPickerPresented, selection: $isPhotoPickerItem, matching: .images)
+         .photoPickerSheet(isPresented: $isPhotoPickerPresented, selection: $selectedAttachmentData)
      }
      
      // MARK: - Toolbar Items
@@ -353,7 +361,7 @@ struct ChatView: View {
         selectedAttachmentData = nil
         selectedAttachmentName = nil
         selectedAttachmentMime = nil
-        isPhotoPickerItem = nil
+
     }
     
     private func scrollToBottom() {
@@ -375,11 +383,14 @@ struct ChatView: View {
 // MARK: - Message Bubble View
 struct MessageBubbleView: View {
     let message: ChatMessage
+    var onImageTapped: ((UIImage) -> Void)? // Callback for image preview
     @Environment(\.colorScheme) var colorScheme
     
     @State private var loadedAttachmentData: Data?
     @State private var loadingError: String?
     @State private var isLoading = false
+    @State private var showShareSheet = false
+    @State private var shareItems: [Any] = []
     
     private var displayData: Data? {
         message.attachmentData ?? loadedAttachmentData
@@ -399,32 +410,43 @@ struct MessageBubbleView: View {
                                 .scaledToFit()
                                 .frame(maxWidth: 200)
                                 .cornerRadius(12)
+                                .onTapGesture {
+                                    onImageTapped?(uiImage)
+                                }
                         } else if mime.hasPrefix("audio/") {
                             // Audio Message
                             AudioMessageBubble(data: attachmentData, duration: 0, isFromMe: message.isFromMe)
                         } else {
                             // Generic File
-                            HStack(spacing: 12) {
-                                Image(systemName: "doc.fill")
-                                    .font(.title)
-                                    .foregroundColor(message.isFromMe ? .white : .blue)
-                                
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(message.attachmentName ?? "Unknown File")
-                                        .font(.headline)
-                                        .foregroundColor(message.isFromMe ? .white : .primary)
-                                        .lineLimit(1)
+                            // Generic File - Use ShareLink for native saving
+                            Button(action: {
+                                let name = message.attachmentName ?? "file"
+                                let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(name)
+                                try? attachmentData.write(to: tempURL)
+                                self.shareItems = [tempURL]
+                                self.showShareSheet = true
+                            }) {
+                                HStack(spacing: 12) {
+                                    Image(systemName: "doc.fill")
+                                        .font(.title)
+                                        .foregroundColor(message.isFromMe ? .white : .blue)
                                     
-                                    Text(ByteCountFormatter.string(fromByteCount: Int64(attachmentData.count), countStyle: .file))
-                                        .font(.caption)
-                                        .foregroundColor(message.isFromMe ? .white.opacity(0.8) : .secondary)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(message.attachmentName ?? "Unknown File")
+                                            .font(.headline)
+                                            .foregroundColor(message.isFromMe ? .white : .primary)
+                                            .lineLimit(1)
+                                        
+                                        Text(ByteCountFormatter.string(fromByteCount: Int64(attachmentData.count), countStyle: .file))
+                                            .font(.caption)
+                                            .foregroundColor(message.isFromMe ? .white.opacity(0.8) : .secondary)
+                                    }
                                 }
+                                .padding(12)
+                                .background(bubbleBackground)
                             }
-                            .padding(12)
-                            .background(bubbleBackground)
-                            .onTapGesture {
-                                 shareFile(data: attachmentData, name: message.attachmentName ?? "file")
-                            }
+                            .shareSheet(isPresented: $showShareSheet, items: shareItems)
+                            .buttonStyle(.plain) // Remove button styling to look like a bubble
                         }
                     } else {
                         // --- Loading / Error State ---
@@ -749,7 +771,7 @@ struct BubbleShape: Shape {
 }
 
 #Preview {
-    NavigationStack {
+    AnyNavigationStack {
         ChatView(user: ChatUser(
             name: "Alice",
             certificateSubject: "CN=alice",
@@ -766,7 +788,7 @@ struct CertificateDetailSheet: View {
     let user: ChatUser
     
     var body: some View {
-        NavigationStack {
+    AnyNavigationStack {
             ZStack {
                 if colorScheme == .dark {
                     Color(red: 0.05, green: 0.05, blue: 0.12).ignoresSafeArea()
@@ -799,10 +821,15 @@ struct CertificateDetailSheet: View {
                             
                             Text(user.certificateSubject)
                                 .font(.subheadline)
+                            Text(user.certificateSubject)
+                                .font(.subheadline)
                                 .foregroundColor(.gray)
                         }
                         
-                        // Certificate Status
+                        // ... existing cert view ...
+                        
+                    }
+
                         VStack(spacing: 16) {
                             certificateRow(title: "Status", value: user.certificateData != nil ? "Valid" : "Not Available", isPositive: user.certificateData != nil)
                             
@@ -911,5 +938,77 @@ struct CertificateDetailSheet: View {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .abbreviated
         return formatter.localizedString(for: date, relativeTo: Date())
+    }
+
+// MARK: - Image Preview View
+struct ImagePreviewView: View {
+    let image: UIImage
+    @Environment(\.dismiss) var dismiss
+    @State private var scale: CGFloat = 1.0
+    @State private var showShareSheet = false
+    @State private var shareItems: [Any] = []
+    
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFit()
+                .scaleEffect(scale)
+                .gesture(
+                    MagnificationGesture()
+                        .onChanged { value in
+                            scale = value
+                        }
+                        .onEnded { _ in
+                            withAnimation {
+                                scale = 1.0
+                            }
+                        }
+                )
+            
+            VStack {
+                HStack {
+                    // Share Button
+                    // Share Button
+                    Button(action: {
+                        shareItems = [image]
+                        showShareSheet = true
+                    }) {
+                        Image(systemName: "square.and.arrow.up")
+                            .font(.title)
+                            .foregroundColor(.white)
+                            .padding()
+                    }
+                    .shareSheet(isPresented: $showShareSheet, items: shareItems)
+                    
+                    Spacer()
+                    
+                    Button(action: { dismiss() }) {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.title)
+                            .foregroundColor(.white)
+                            .padding()
+                    }
+                }
+                Spacer()
+            }
+        }
+    }
+}
+
+// Helper struct for Transferable
+@available(iOS 16.0, *)
+struct AttachmentFile: Transferable {
+    let data: Data
+    let name: String
+    
+    static var transferRepresentation: some TransferRepresentation {
+        FileRepresentation(exportedContentType: .data) { file in
+            let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(file.name)
+            try? file.data.write(to: tempURL)
+            return SentTransferredFile(tempURL)
+        }
     }
 }

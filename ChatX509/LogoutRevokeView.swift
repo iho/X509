@@ -14,7 +14,7 @@ struct LogoutRevokeView: View {
     @Environment(\.colorScheme) var colorScheme
     
     var body: some View {
-        NavigationStack {
+        AnyNavigationStack {
             ZStack {
                 // Background gradient
                 // Background gradient

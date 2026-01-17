@@ -16,7 +16,7 @@ actor UserDiscoveryService {
     static let shared = UserDiscoveryService()
     
     // Configuration
-    private let announceInterval: TimeInterval = 10 // seconds (faster for testing)
+    private let announceInterval: TimeInterval = 1 // sent presence every 1 second as requested
     private let staleTimeout: TimeInterval = 60 // Mark offline after 60s without announcement
     
     // State
@@ -83,6 +83,18 @@ actor UserDiscoveryService {
         await announcePresence(status: .online)
     }
     
+    /// Announce presence with retries to ensure delivery (e.g. after new certificate generation)
+    func announceIdentityWithRetry(attempts: Int = 5, delay: TimeInterval = 0.5) async {
+        print("[Discovery] Starting burst announcement of new identity (\(attempts) attempts)...")
+        for i in 1...attempts {
+            await announcePresence(status: .online)
+            if i < attempts {
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            }
+        }
+        print("[Discovery] Burst announcement complete.")
+    }
+    
     /// Restart discovery service (e.g. after identity change)
     func restart() {
         guard isRunning else { return }
@@ -123,7 +135,7 @@ actor UserDiscoveryService {
             return
         }
         
-        print("[Discovery] Announcing presence for: \(username)")
+        // print("[Discovery] Announcing presence for: \(username)")
         
         // Serialize certificate to DER
         var certSerializer = DER.Serializer()
@@ -153,7 +165,7 @@ actor UserDiscoveryService {
         do {
             try serializer.serialize(chatProtocol)
             let data = Data(serializer.serializedBytes)
-            await multicast.send(data: data)
+            await multicast.send(data: data, address: MulticastService.BROADCAST_GROUP)
         } catch {
             print("Failed to send presence: \(error)")
         }
@@ -181,9 +193,9 @@ actor UserDiscoveryService {
                 
                 // Skip our own announcements
                 let myUsername = await MainActor.run { self.certificateManager.username }
-                print("[Discovery] Received presence from '\(username)', my username is '\(myUsername)'")
+                // print("[Discovery] Received presence from '\(username)', my username is '\(myUsername)'")
                 if username == myUsername {
-                    print("[Discovery] Skipping own announcement")
+                    // print("[Discovery] Skipping own announcement")
                     continue
                 }
                 

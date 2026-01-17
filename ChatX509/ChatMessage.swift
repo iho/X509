@@ -97,7 +97,6 @@ final class ChatMessageStore: ObservableObject {
         Task {
             await multicast.start()
             listenForMessages()
-            startRetryLoop()
         }
     }
     
@@ -126,7 +125,8 @@ final class ChatMessageStore: ObservableObject {
                     } else {
                         // Resend
                         print("Resending message \(id)...")
-                        await multicast.send(data: safeMsg.msgDer)
+                        print("Resending message \(id)...")
+                        await multicast.send(data: safeMsg.msgDer, address: MulticastService.CHAT_GROUP)
                     }
                 }
             }
@@ -136,9 +136,10 @@ final class ChatMessageStore: ObservableObject {
     func sendMessage(_ content: String, attachment: Data? = nil, attachmentName: String? = nil, attachmentMime: String? = nil) {
         guard let username = certificateManager.username.data(using: .utf8),
               let privateKey = certificateManager.currentPrivateKey else {
-            print("Cannot send message: Missing identity")
+            print("[ChatMessageStore] Cannot send message: Missing identity")
             return
         }
+        print("[ChatMessageStore] Preparing to send message to '\(recipientName)'...")
         
         // --- 1. Construct Message Components ---
         
@@ -344,7 +345,9 @@ final class ChatMessageStore: ObservableObject {
                     
                     // Initial Send
                     Task {
-                        await multicast.send(data: Data(msgDer))
+                        print("[ChatMessageStore] Sending message data (\(Data(msgDer).count) bytes) via multicast...")
+                        print("[ChatMessageStore] Sending message data (\(Data(msgDer).count) bytes) via multicast...")
+                        await multicast.send(data: Data(msgDer), address: MulticastService.CHAT_GROUP)
                     }
                 }
             }
@@ -360,20 +363,33 @@ final class ChatMessageStore: ObservableObject {
                     let proto = try CHAT_CHATProtocol(derEncoded: ArraySlice(data))
                     
                     // Only process messages
-                    guard case .message(let msg) = proto else { continue }
+                    guard case .message(let msg) = proto else { return }
+                    
+                    print("[ChatMessageStore] Received CHAT_Message from '\(String(decoding: msg.from.bytes, as: UTF8.self))'")
                     
                     // --- Handle ACKs (Read Receipt) ---
                     if msg.type.rawValue == 4 { // .read
                         // Ensure we have a valid ID in repliedby to know which message was read
                         let ackIdData = Data(msg.repliedby.bytes)
-                        if ackIdData.count == 16 {
-                            let uuid = UUID(uuid: (ackIdData[0], ackIdData[1], ackIdData[2], ackIdData[3], ackIdData[4], ackIdData[5], ackIdData[6], ackIdData[7], ackIdData[8], ackIdData[9], ackIdData[10], ackIdData[11], ackIdData[12], ackIdData[13], ackIdData[14], ackIdData[15]))
+                        
+                        // Debug log for ACK receipt
+                        print("[ChatMessageStore] Received ACK. ID Bytes: \(ackIdData.map { String(format: "%02X", $0) }.joined())")
+                        
+                        if ackIdData.count >= 16 {
+                            let suffix = Array(ackIdData.suffix(16))
+                            let uuid = UUID(uuid: (suffix[0], suffix[1], suffix[2], suffix[3], suffix[4], suffix[5], suffix[6], suffix[7], suffix[8], suffix[9], suffix[10], suffix[11], suffix[12], suffix[13], suffix[14], suffix[15]))
+                            
+                            print("[ChatMessageStore] ACK UUID: \(uuid)")
                             
                             await MainActor.run {
+                                print("[ChatMessageStore] Queue Keys: \(self.outgoingQueue.keys.map { "\($0)" })")
+                                
                                 if self.outgoingQueue[uuid] != nil {
                                     print("Received ACK for \(uuid), removing from queue.")
                                     self.outgoingQueue.removeValue(forKey: uuid)
                                     self.markAsDelivered(uuid)
+                                } else {
+                                    print("[ChatMessageStore] WARNING: ACK UUID \(uuid) NOT FOUND in queue!")
                                 }
                             }
                         }
@@ -458,14 +474,16 @@ final class ChatMessageStore: ObservableObject {
                     // Check if message is for us (broadcast or targeted)
                     let recipient = String(decoding: msg.to.bytes, as: UTF8.self)
                     if recipient != "broadcast" && recipient != myUsername {
+                        print("[ChatMessageStore] Dropping message for '\(recipient)' (my username: '\(myUsername)')")
                         continue // Message isn't for us
                     }
                     
                     // ID
                     let idData = Data(msg.id.bytes)
                     let uuid: UUID
-                    if idData.count == 16 {
-                       uuid = UUID(uuid: (idData[0], idData[1], idData[2], idData[3], idData[4], idData[5], idData[6], idData[7], idData[8], idData[9], idData[10], idData[11], idData[12], idData[13], idData[14], idData[15]))
+                    if idData.count >= 16 {
+                        let suffix = Array(idData.suffix(16))
+                        uuid = UUID(uuid: (suffix[0], suffix[1], suffix[2], suffix[3], suffix[4], suffix[5], suffix[6], suffix[7], suffix[8], suffix[9], suffix[10], suffix[11], suffix[12], suffix[13], suffix[14], suffix[15]))
                     } else {
                         uuid = UUID()
                     }
@@ -493,7 +511,8 @@ final class ChatMessageStore: ObservableObject {
                     }
                     
                 } catch {
-                    // Silently ignore non-message protocol types (like presence)
+                    // Log error to debug ACK failures
+                    print("[ChatMessageStore] Failed to decode packet: \(error)")
                     continue
                 }
             }
@@ -501,14 +520,22 @@ final class ChatMessageStore: ObservableObject {
     }
     
     private func receiveMessage(_ message: ChatMessage) {
+        // Deduplication: Check if message with this ID already exists
+        if messages.contains(where: { $0.id == message.id }) {
+            print("[ChatMessageStore] Duplicate message \(message.id) received. Ignoring content but will send ACK.")
+            return
+        }
         messages.append(message)
         saveMessages()
     }
     
     private func markAsDelivered(_ messageId: UUID) {
         if let index = messages.firstIndex(where: { $0.id == messageId }) {
+            print("[ChatMessageStore] Marking message \(messageId) as DELIVERED in UI model.")
             messages[index].isDelivered = true
             saveMessages()
+        } else {
+            print("[ChatMessageStore] Failed to find message \(messageId) to mark as delivered.")
         }
     }
     
@@ -609,7 +636,9 @@ final class ChatMessageStore: ObservableObject {
             var msgSerializer = DER.Serializer()
             try! msgSerializer.serialize(protocolMsg)
             
-            await multicast.send(data: Data(msgSerializer.serializedBytes))
+            print("[ChatMessageStore] Sending ACK for message \(originId.bytes.map { String(format: "%02X", $0) }.joined())")
+            print("[ChatMessageStore] Sending ACK for message \(originId.bytes.map { String(format: "%02X", $0) }.joined())")
+            await multicast.send(data: Data(msgSerializer.serializedBytes), address: MulticastService.CHAT_GROUP)
         }
     }
 }

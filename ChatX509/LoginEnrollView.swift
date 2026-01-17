@@ -24,7 +24,7 @@ struct LoginEnrollView: View {
     }
     
     var body: some View {
-        NavigationStack {
+        AnyNavigationStack {
             ZStack {
                 // Background gradient
                 // Background gradient
@@ -289,7 +289,7 @@ struct LoginEnrollView: View {
         
         // Trigger immediate discovery announce
         Task {
-            await UserDiscoveryService.shared.announceNow()
+            await UserDiscoveryService.shared.announceIdentityWithRetry()
         }
         
         NotificationCenter.default.post(name: .userDidConnect, object: nil)

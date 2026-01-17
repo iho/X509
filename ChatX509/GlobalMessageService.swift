@@ -240,7 +240,7 @@ actor GlobalMessageService {
         var msgSerializer = DER.Serializer()
         try! msgSerializer.serialize(protocolMsg)
         
-        await multicast.send(data: Data(msgSerializer.serializedBytes))
+        await multicast.send(data: Data(msgSerializer.serializedBytes), address: MulticastService.CHAT_GROUP)
     }
     
     @MainActor

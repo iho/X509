@@ -30,12 +30,14 @@ struct UsersListView: View {
         case addUser
         case loginEnroll
         case logoutRevoke
+        case about
+        case debug
         
         var id: Int { hashValue }
     }
     
     var body: some View {
-        NavigationStack {
+        AnyNavigationStack {
             ZStack {
                 // Background gradient
                 if colorScheme == .dark {
@@ -74,9 +76,9 @@ struct UsersListView: View {
             .navigationTitle("Chats")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.large)
-            .toolbarColorScheme(isDarkMode ? .dark : .light, for: .navigationBar)
-            .toolbarBackground(isDarkMode ? Color(red: 0.1, green: 0.1, blue: 0.2) : Color(white: 0.95), for: .navigationBar)
-            .toolbarBackground(.visible, for: .navigationBar)
+            .compatToolbarColorScheme(isDarkMode ? .dark : .light, for: .navigationBar)
+            .compatToolbarBackground(isDarkMode ? Color(red: 0.1, green: 0.1, blue: 0.2) : Color(white: 0.95), for: .navigationBar)
+            .compatToolbarBackground(.visible, for: .navigationBar)
             #endif
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
@@ -117,7 +119,7 @@ struct UsersListView: View {
                 Text("This will wipe all chat history with all users. Your contacts will remain, but all messages will be deleted.")
             }
             #if os(macOS)
-            .toolbarBackground(.ultraThinMaterial, for: .windowToolbar)
+            .compatToolbarBackground(.ultraThinMaterial, for: .windowToolbar)
             #endif
             .searchable(text: $searchText, placement: .automatic, prompt: "Search users or organizations")
         }
@@ -129,6 +131,10 @@ struct UsersListView: View {
                 LoginEnrollView()
             case .logoutRevoke:
                 LogoutRevokeView()
+            case .about:
+                AboutView()
+            case .debug:
+                DebugView()
             }
         }
         .sheet(isPresented: $showOwnCertificate) {
@@ -352,11 +358,22 @@ struct UsersListView: View {
             Button(role: .destructive, action: { exit(0) }) {
                 Label("Quit Chat", systemImage: "power")
             }
+            
+            Divider()
+            
+            Button(action: { activeSheet = .debug }) {
+                Label("Debug Tools", systemImage: "ladybug.fill")
+            }
+            
+            Button(action: { activeSheet = .about }) {
+                Label("About ChatX509", systemImage: "info.circle")
+            }
         } label: {
             Image(systemName: "line.3.horizontal.circle")
                 .font(.body)
                 .foregroundColor(.gray)
         }
+        // Force fileExporter to bind properly (unchanged)
         .fileExporter(
             isPresented: $showKeyExporter,
             document: KeyDocument(data: exportKeyData ?? Data()),
@@ -635,7 +652,7 @@ struct OwnCertificateSheet: View {
     @Environment(\.colorScheme) var colorScheme
     
     var body: some View {
-        NavigationStack {
+        AnyNavigationStack {
             ZStack {
                 if colorScheme == .dark {
                     Color(red: 0.05, green: 0.05, blue: 0.12).ignoresSafeArea()
@@ -736,7 +753,7 @@ struct OwnCertificateSheet: View {
             }
             .navigationTitle("Your Identity")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbarColorScheme(colorScheme == .dark ? .dark : .light, for: .navigationBar)
+            .compatToolbarColorScheme(colorScheme == .dark ? .dark : .light, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }

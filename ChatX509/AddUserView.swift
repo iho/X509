@@ -18,7 +18,7 @@ struct AddUserView: View {
     @State private var errorMessage: String?
     
     var body: some View {
-        NavigationStack {
+        AnyNavigationStack {
             ZStack {
                 // Background
                 // Background
@@ -71,8 +71,8 @@ struct AddUserView: View {
             .navigationTitle("Add Contact")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(.ultraThinMaterial, for: .navigationBar)
-            .toolbarColorScheme(colorScheme == .dark ? .dark : .light, for: .navigationBar)
+            .compatToolbarBackground(.ultraThinMaterial, for: .navigationBar)
+            .compatToolbarColorScheme(colorScheme == .dark ? .dark : .light, for: .navigationBar)
             #endif
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
