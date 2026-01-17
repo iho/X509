@@ -1,0 +1,29 @@
+MESSAGE DEFINITIONS ::= BEGIN // v1
+
+Announcement ::= SEQUENCE {
+    id      INTEGER,               -- unique message identifier (usually monotonic)
+    version INTEGER DEFAULT 1,     -- protocol version
+    source  OCTET STRING (SIZE(4)),-- IPv4 address of sender (big-endian)
+    topic   INTEGER DEFAULT 1      -- chat room / channel identifier
+    certificate Certificate        -- X.509 certificate of the announcing node
+}
+
+Message ::= SEQUENCE {
+    id      INTEGER,               -- unique message identifier (usually monotonic)
+    version INTEGER DEFAULT 1,     -- protocol version
+    source  OCTET STRING (SIZE(4)),-- IPv4 address of sender (big-endian)
+    topic   INTEGER DEFAULT 1      -- chat room / channel identifier
+    recipient   OCTET STRING (SIZE(4)) OPTIONAL, -- IPv4 of direct recipient (if known)
+    content     ContentInfo        -- CMS EnvelopedData (usually with 1 recipient = group key)
+}
+
+Acknowledgement ::= SEQUENCE {
+    id      INTEGER,               -- unique message identifier (usually monotonic)
+    version INTEGER DEFAULT 1,     -- protocol version
+    source  OCTET STRING (SIZE(4)),-- IPv4 address of sender (big-endian)
+    topic   INTEGER DEFAULT 1      -- chat room / channel identifier
+    recipient   OCTET STRING (SIZE(4)) OPTIONAL,
+    ackFor      INTEGER            -- id of the Message we are acknowledging
+}
+
+END
