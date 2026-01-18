@@ -34,16 +34,36 @@ struct AboutView: View {
                     
                     // App Icon & Name
                     VStack(spacing: 16) {
-                        Image(uiImage: UIImage(named: "AppIcon") ?? UIImage())
-                            .resizable()
-                            .aspectRatio(contentMode: .fit)
-                            .frame(width: 120, height: 120)
-                            .cornerRadius(24)
-                            .shadow(radius: 10)
-                            .overlay(
+                        if let icon = UIImage(named: "AppIcon") {
+                             Image(uiImage: icon)
+                                .resizable()
+                                .aspectRatio(contentMode: .fit)
+                                .frame(width: 120, height: 120)
+                                .cornerRadius(24)
+                                .shadow(radius: 10)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 24)
+                                        .stroke(Color.white.opacity(0.1), lineWidth: 1)
+                                )
+                        } else {
+                            // Fallback Icon
+                            ZStack {
                                 RoundedRectangle(cornerRadius: 24)
-                                    .stroke(Color.white.opacity(0.1), lineWidth: 1)
-                            )
+                                    .fill(
+                                        LinearGradient(
+                                            colors: [.blue, .purple],
+                                            startPoint: .topLeading,
+                                            endPoint: .bottomTrailing
+                                        )
+                                    )
+                                    .frame(width: 120, height: 120)
+                                    .shadow(radius: 10)
+                                
+                                Image(systemName: "person.badge.shield.checkmark.fill")
+                                    .font(.system(size: 60))
+                                    .foregroundColor(.white)
+                            }
+                        }
                         
                         VStack(spacing: 8) {
                             Text("ChatX509")

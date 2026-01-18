@@ -25,6 +25,7 @@ struct UsersListView: View {
     @State private var showDeleteAllConfirmation = false
     @State private var userToDelete: ChatUser?
     @State private var searchText = ""
+    @State private var isSearchActive = false
     
     enum ActiveSheet: Identifiable {
         case addUser
@@ -38,121 +39,126 @@ struct UsersListView: View {
     
     var body: some View {
         AnyNavigationStack {
-            ZStack {
-                // Background gradient
-                if colorScheme == .dark {
-                    LinearGradient(
-                        colors: [
-                            Color(red: 0.1, green: 0.1, blue: 0.2),
-                            Color(red: 0.05, green: 0.05, blue: 0.15)
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                    .ignoresSafeArea()
+            mainContent
+                .sheet(item: $activeSheet) { sheet in
+                    switch sheet {
+                    case .addUser:
+                        AddUserView()
+                    case .loginEnroll:
+                        LoginEnrollView()
+                    case .logoutRevoke:
+                        LogoutRevokeView()
+                    case .about:
+                        AboutView()
+                    case .debug:
+                        DebugView()
+                    }
+                }
+                .sheet(isPresented: $showOwnCertificate) {
+                    if let cert = CertificateManager.shared.currentCertificate {
+                        OwnCertificateSheet(certificate: cert)
+                    }
+                }
+        }
+    }
+    
+    // Extracted content to help type checker
+    private var mainContent: some View {
+        ZStack {
+            // Background gradient
+            if colorScheme == .dark {
+                LinearGradient(
+                    colors: [
+                        Color(red: 0.1, green: 0.1, blue: 0.2),
+                        Color(red: 0.05, green: 0.05, blue: 0.15)
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+                .ignoresSafeArea()
+            } else {
+                LinearGradient(
+                    colors: [
+                        Color(white: 0.95), // White-gray
+                        Color.white
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+                .ignoresSafeArea()
+            }
+            
+            VStack(spacing: 0) {
+                // Identity header
+                identityHeader
+                if userStore.users.isEmpty {
+                    emptyStateView
                 } else {
-                    LinearGradient(
-                        colors: [
-                            Color(white: 0.95), // White-gray
-                            Color.white
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                    .ignoresSafeArea()
+                    userListContent
                 }
-                
-                VStack(spacing: 0) {
-                    // Identity header
-                    identityHeader                    
-                    if userStore.users.isEmpty {
-                        emptyStateView
-                    } else {
-                        userListContent
-                    }
-                }
-            }
-            .navigationTitle("Chats")
-            #if os(iOS)
-            .navigationBarTitleDisplayMode(.large)
-            .compatToolbarColorScheme(isDarkMode ? .dark : .light, for: .navigationBar)
-            .compatToolbarBackground(isDarkMode ? Color(red: 0.1, green: 0.1, blue: 0.2) : Color(white: 0.95), for: .navigationBar)
-            .compatToolbarBackground(.visible, for: .navigationBar)
-            #endif
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    addUserButton
-                }
-                ToolbarItem(placement: .cancellationAction) {
-                    settingsMenu
-                }
-            }
-            .alert("Identity Expired", isPresented: $showExpirationAlert) {
-                Button("Regenerate", role: .destructive) {
-                    print("[UI] Regenerate button tapped")
-                    showExpirationAlert = false
-                    // Ensure we don't block
-                    Task {
-                        CertificateManager.shared.generateNewIdentity()
-                    }
-                }
-                Button("Cancel", role: .cancel) {
-                    print("[UI] Cancel button tapped")
-                    showExpirationAlert = false
-                }
-            } message: {
-                Text("Your identity has expired. Other users won't be able to send you encrypted messages until you regenerate your certificate.")
-            }
-            .onReceive(CertificateManager.shared.$isExpired) { expired in
-                // Only update if changed to avoid view refresh cycles
-                if showExpirationAlert != expired {
-                    print("[UI] isExpired changed to \(expired), updating alert")
-                    showExpirationAlert = expired
-                }
-            }
-            .alert("Delete Chat?", isPresented: .init(
-                get: { userToDelete != nil },
-                set: { if !$0 { userToDelete = nil } }
-            ), presenting: userToDelete) { user in
-                Button("Cancel", role: .cancel) { }
-                Button("Delete", role: .destructive) {
-                    userStore.removeUser(user)
-                }
-            } message: { user in
-                Text("Are you sure you want to delete the chat history with \(user.name)? This action cannot be undone.")
-            }
-            .alert("Delete All Messages?", isPresented: $showDeleteAllConfirmation) {
-                Button("Cancel", role: .cancel) { }
-                Button("Delete All", role: .destructive) {
-                    userStore.clearAllMessages()
-                }
-            } message: {
-                Text("This will wipe all chat history with all users. Your contacts will remain, but all messages will be deleted.")
-            }
-            #if os(macOS)
-            .compatToolbarBackground(.ultraThinMaterial, for: .windowToolbar)
-            #endif
-            .searchable(text: $searchText, placement: .automatic, prompt: "Search users or organizations")
-        }
-        .sheet(item: $activeSheet) { sheet in
-            switch sheet {
-            case .addUser:
-                AddUserView()
-            case .loginEnroll:
-                LoginEnrollView()
-            case .logoutRevoke:
-                LogoutRevokeView()
-            case .about:
-                AboutView()
-            case .debug:
-                DebugView()
             }
         }
-        .sheet(isPresented: $showOwnCertificate) {
-            if let cert = CertificateManager.shared.currentCertificate {
-                OwnCertificateSheet(certificate: cert)
+        .navigationTitle("Chats")
+        #if os(iOS)
+        .navigationBarTitleDisplayMode(.large)
+        .compatToolbarColorScheme(isDarkMode ? .dark : .light, for: .navigationBar)
+        .compatToolbarBackground(isDarkMode ? Color(red: 0.1, green: 0.1, blue: 0.2) : Color(white: 0.95), for: .navigationBar)
+        .compatToolbarBackground(.visible, for: .navigationBar)
+        #endif
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                addUserButton
+            }
+            ToolbarItem(placement: .cancellationAction) {
+                settingsMenu
             }
         }
+        .alert("Identity Expired", isPresented: $showExpirationAlert) {
+            Button("Regenerate", role: .destructive) {
+                print("[UI] Regenerate button tapped")
+                showExpirationAlert = false
+                // Ensure we don't block
+                Task {
+                    CertificateManager.shared.generateNewIdentity()
+                }
+            }
+            Button("Cancel", role: .cancel) {
+                print("[UI] Cancel button tapped")
+                showExpirationAlert = false
+            }
+        } message: {
+            Text("Your identity has expired. Other users won't be able to send you encrypted messages until you regenerate your certificate.")
+        }
+        .onReceive(CertificateManager.shared.$isExpired) { expired in
+            // Only update if changed to avoid view refresh cycles
+            if showExpirationAlert != expired {
+                print("[UI] isExpired changed to \(expired), updating alert")
+                showExpirationAlert = expired
+            }
+        }
+        .alert("Delete Chat?", isPresented: .init(
+            get: { userToDelete != nil },
+            set: { if !$0 { userToDelete = nil } }
+        ), presenting: userToDelete) { user in
+            Button("Cancel", role: .cancel) { }
+            Button("Delete", role: .destructive) {
+                userStore.removeUser(user)
+            }
+        } message: { user in
+            Text("Are you sure you want to delete the chat history with \(user.name)? This action cannot be undone.")
+        }
+        .alert("Delete All Messages?", isPresented: $showDeleteAllConfirmation) {
+            Button("Cancel", role: .cancel) { }
+            Button("Delete All", role: .destructive) {
+                userStore.clearAllMessages()
+            }
+        } message: {
+            Text("This will wipe all chat history with all users. Your contacts will remain, but all messages will be deleted.")
+        }
+        #if os(macOS)
+        .compatToolbarBackground(.ultraThinMaterial, for: .windowToolbar)
+        #endif
+        .searchable(text: $searchText, placement: .automatic, prompt: "Search users or organizations")
     }
     
     // MARK: - Identity Header
@@ -360,7 +366,7 @@ struct UsersListView: View {
             
             Divider()
             
-            Button(action: { /* Search TODO */ }) {
+            Button(action: { isSearchActive = true }) {
                 Label("Search", systemImage: "magnifyingglass")
             }
             

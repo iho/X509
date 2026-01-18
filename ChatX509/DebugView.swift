@@ -79,7 +79,7 @@ struct DebugView: View {
     private func fetchStats() {
         Task {
             let s = await Task.detached {
-                MulticastService.shared.getDebugStats()
+                await MulticastService.shared.getDebugStats()
             }.value
             await MainActor.run {
                 self.stats = s

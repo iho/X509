@@ -351,28 +351,31 @@ final class UserDiscoveryService: @unchecked Sendable {
             
             if !staleUsers.isEmpty {
                  offlineCallback = onUserOffline
+                 
+                 // 1. Capture info needed for callback
+                 var staleInfo: [(String, Data?)] = []
                  for username in staleUsers {
-                     let serial = usernameToSerial[username]
-                     lastSeenTimes.removeValue(forKey: username)
-                     usernameToSerial.removeValue(forKey: username)
-                     // Call callback outside loop? Or inside if thread safe?
-                     // Callback is typically UI update, should be safe or dispatch to Main.
-                     // But we are in lock.
+                     staleInfo.append((username, usernameToSerial[username]))
                  }
-            }
-            // Cannot call callback inside lock if it calls back into service or sleeps.
-            // Copy data needed for callback.
-            let staleInfo: [(String, Data?)] = staleUsers.map { ($0, usernameToSerial[$0]) }
-            // Remove serials after mapping
-            for user in staleUsers {
-                usernameToSerial.removeValue(forKey: user)
-            }
-            serviceLock.unlock()
-            
-            if let callback = offlineCallback {
-                for (user, serial) in staleInfo {
-                    callback(user, serial)
-                }
+                 
+                 // 2. Remove from state
+                 for username in staleUsers {
+                     lastSeenTimes.removeValue(forKey: username)
+                     lastSeenSignatures.removeValue(forKey: username)
+                     usernameToSerial.removeValue(forKey: username)
+                 }
+                 
+                 serviceLock.unlock()
+                 
+                 // 3. Notify outside lock
+                 if let callback = offlineCallback {
+                     for (user, serial) in staleInfo {
+                         print("[Discovery] Mark offline: \(user)")
+                         callback(user, serial)
+                     }
+                 }
+            } else {
+                serviceLock.unlock()
             }
         }
     }
