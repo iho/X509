@@ -33,6 +33,7 @@ final class UserDiscoveryService: @unchecked Sendable {
     
     // Track last seen times and mapping from username to serial
     private var lastSeenTimes: [String: Date] = [:]
+    private var lastSeenSignatures: [String: String] = [:] // Map username -> certBase64
     private var usernameToSerial: [String: Data] = [:]
     
     private let multicast = MulticastService.shared
@@ -45,16 +46,43 @@ final class UserDiscoveryService: @unchecked Sendable {
     /// Start the discovery service
     func start(onUserDiscovered: @escaping (DiscoveredUser) -> Void, onUserOffline: @escaping (String, Data?) -> Void) {
         serviceLock.lock()
+        // Always update callbacks to latest
+        self.onUserDiscovered = onUserDiscovered
+        self.onUserOffline = onUserOffline
+        
         if isRunning {
             serviceLock.unlock()
             return
         }
         isRunning = true
-        
-        self.onUserDiscovered = onUserDiscovered
-        self.onUserOffline = onUserOffline
         serviceLock.unlock()
         
+        startTasks()
+        
+        print("[Discovery] UserDiscoveryService started")
+    }
+    
+    /// Resume discovery using existing callbacks (e.g. after background)
+    func resume() {
+        serviceLock.lock()
+        if isRunning {
+            serviceLock.unlock()
+            return
+        }
+        guard self.onUserDiscovered != nil else {
+            serviceLock.unlock()
+            print("[Discovery] Cannot resume - no callbacks registered. Call start() first.")
+            return
+        }
+        isRunning = true
+        serviceLock.unlock()
+        
+        startTasks()
+        
+        print("[Discovery] UserDiscoveryService resumed")
+    }
+    
+    private func startTasks() {
         // Start multicast service in background
         Task.detached { [weak self] in
             self?.multicast.start()
@@ -74,8 +102,6 @@ final class UserDiscoveryService: @unchecked Sendable {
         Task.detached { [weak self] in
             await self?.cleanupLoop()
         }
-        
-        print("[Discovery] UserDiscoveryService started")
     }
     
     /// Stop the discovery service
@@ -97,27 +123,10 @@ final class UserDiscoveryService: @unchecked Sendable {
     
     /// Restart discovery service (e.g. after identity change)
     func restart() async {
-        serviceLock.lock()
-        let wasRunning = isRunning
-        // Save callbacks
-        let onDiscovered = self.onUserDiscovered
-        let onOffline = self.onUserOffline
-        serviceLock.unlock()
-        
-        if wasRunning {
-             stop()
-             // Wait for tasks to clear? 
-             try? await Task.sleep(nanoseconds: 500_000_000)
-             
-             if let onDiscovered = onDiscovered, let onOffline = onOffline {
-                 start(onUserDiscovered: onDiscovered, onUserOffline: onOffline)
-             }
-        }
-        
-        // If not running, just announce once?
-        if !wasRunning {
-            await announceNow()
-        }
+        stop()
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        resume()
+        await announceNow()
     }
     
     // MARK: - Private Implementation
@@ -222,25 +231,32 @@ final class UserDiscoveryService: @unchecked Sendable {
                 // Skip our own announcements
                 // Note: certificateManager.username is @Published, use safely
                 if let (myUsername, _, _) = certificateManager.getIdentity(), username == myUsername {
-                    print("[Discovery] Ignoring self-announcement from '\(username)'")
+                    // print("[Discovery] Ignoring self-announcement from '\(username)'")
                     continue
                 }
                 
-                // Optimization: Check if we already know this user and they are not stale
+                // Optimization: Check if we already know this user (Check ID AND Cert Signature)
                 // If known and seen < 60s ago, just update timestamp and skip heavy cert parsing
                 serviceLock.lock()
                 let lastSeen = lastSeenTimes[username]
+                let previousCertSig = lastSeenSignatures[username]
                 let isKnown = lastSeen != nil
+                let isSameIdentity = previousCertSig == certBase64
                 serviceLock.unlock()
                 
-                if isKnown, let lastSeen = lastSeen, Date().timeIntervalSince(lastSeen) < 60.0 {
+                if isKnown, isSameIdentity, let lastSeen = lastSeen, Date().timeIntervalSince(lastSeen) < 60.0 {
                     // Update timestamp only
                     serviceLock.lock()
                     lastSeenTimes[username] = Date()
                     serviceLock.unlock()
-                    // print("[Discovery] Known user '\(username)', skipping cert verification")
+                    // print("[Discovery] Known user '\(username)' (Same Identity), skipping cert verification")
                     continue
                 }
+                
+                // If we are here, it's either:
+                // 1. New user
+                // 2. User seen > 60s ago
+                // 3. User with SAME name but DIFFERENT certificate (Rotated Identity)
 
                 print("[Discovery] Processing peer (Full Verify): '\(username)'")
                 
@@ -282,6 +298,7 @@ final class UserDiscoveryService: @unchecked Sendable {
                 let previousSerial = usernameToSerial[username]
                 
                 lastSeenTimes[username] = Date()
+                lastSeenSignatures[username] = certBase64
                 usernameToSerial[username] = Data(certificate.toBeSigned.serialNumber)
                 
                 let callback = onUserDiscovered

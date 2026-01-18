@@ -64,13 +64,7 @@ struct UsersListView: View {
                 
                 VStack(spacing: 0) {
                     // Identity header
-                    identityHeader
-                    
-                    Text("Debug: \(userStore.users.count) users")
-                        .font(.caption)
-                        .foregroundColor(.red)
-
-                    
+                    identityHeader                    
                     if userStore.users.isEmpty {
                         emptyStateView
                     } else {

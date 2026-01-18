@@ -226,15 +226,31 @@ final class GlobalMessageService: @unchecked Sendable {
         // Message ID (use passed uuid)
         
         // 2. Add to Chat Conversation (Update Store)
+        
+        // Prepare attachment path asynchronously first
+        var savedPath: String?
+        
+        if let data = attachmentData, let name = finalFilename {
+             let ext = URL(fileURLWithPath: name).pathExtension
+             // Await save on background, blocking this Task (which is already detached/async) but not Main
+             savedPath = try? await SecureStorageService.shared.saveEncryptedAttachment(data: data, extension: ext)
+        }
+        
+        let finalPath = savedPath
+        let finalMessageText = messageText
+        
         await MainActor.run {
             updateUserWithMessage(
                 sender: sender,
-                message: messageText,
+                message: finalMessageText,
                 msgId: uuid,
                 wasEncrypted: wasEncrypted,
-                attachmentData: attachmentData,
+                attachmentData: nil, // Data is already saved to disk, don't pass heavy data to View Model unless needed for cache? 
+                                     // Actually updateUserWithMessage logic below constructs ChatMessage.
+                                     // We should update updateUserWithMessage to take 'path' directly.
                 attachmentMime: isText ? nil : finalMime,
-                attachmentName: finalFilename
+                attachmentName: finalFilename,
+                attachmentPath: finalPath
             )
         }
         
@@ -359,7 +375,8 @@ final class GlobalMessageService: @unchecked Sendable {
         wasEncrypted: Bool,
         attachmentData: Data? = nil,
         attachmentMime: String? = nil,
-        attachmentName: String? = nil
+        attachmentName: String? = nil,
+        attachmentPath: String? = nil
     ) {
         var user: ChatUser
         
@@ -382,32 +399,6 @@ final class GlobalMessageService: @unchecked Sendable {
             userStore.users.append(user)
         }
         
-        // Save Attachment
-        if let data = attachmentData, let name = attachmentName {
-             Task {
-                 let ext = URL(fileURLWithPath: name).pathExtension
-                 if let path = try? await SecureStorageService.shared.saveEncryptedAttachment(data: data, extension: ext) {
-                     await MainActor.run {
-                         let updatedMsg = ChatMessage(
-                             id: msgId,
-                             content: message,
-                             timestamp: Date(),
-                             isFromMe: false,
-                             senderName: sender,
-                             isDelivered: true,
-                             isRead: false,
-                             isEncrypted: wasEncrypted,
-                             attachmentData: nil,
-                             attachmentMime: attachmentMime,
-                             attachmentName: attachmentName,
-                             localAttachmentPath: path
-                         )
-                         ChatMessageStore.saveMessageToChat(userId: user.id, message: updatedMsg)
-                     }
-                 }
-             }
-        }
-        
         let chatMessage = ChatMessage(
             id: msgId,
             content: message,
@@ -417,10 +408,10 @@ final class GlobalMessageService: @unchecked Sendable {
             isDelivered: true,
             isRead: false,
             isEncrypted: wasEncrypted,
-            attachmentData: nil,
+            attachmentData: nil, // Don't hold raw data in RAM if path exists
             attachmentMime: attachmentMime,
             attachmentName: attachmentName,
-            localAttachmentPath: nil
+            localAttachmentPath: attachmentPath
         )
         
         // Broadcast for UI updates (e.g. ChatMessageStore will listen to this)

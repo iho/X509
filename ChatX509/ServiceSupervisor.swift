@@ -26,8 +26,9 @@ final class ServiceSupervisor: @unchecked Sendable {
             GlobalMessageService.shared.start()
             
             // 3. Start Discovery
-            // (Note: Discovery starts internally via start() calls if configured, 
-            // but we can explicitly trigger announce if needed)
+            // Resume the announce/listen loops that were stopped
+            UserDiscoveryService.shared.resume()
+            // Also force an immediate burst
             await UserDiscoveryService.shared.announceNow()
             
             // 4. Start Sender

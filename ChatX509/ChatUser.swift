@@ -188,16 +188,7 @@ final class ChatUserStore: ObservableObject {
             
             if changed { scheduleSave() }
         } 
-        // 2. Try to find by name (identity rotation/regeneration case)
-        else if let index = users.firstIndex(where: { $0.name == name }) {
-            print("User '\(name)' rotated identity (new serial). Updating credentials.")
-            users[index].serialNumber = serialNumber
-            users[index].certificateSubject = certificateSubject
-            users[index].certificateData = certificateData
-            users[index].lastSeen = Date()
-            users[index].isOnline = isOnline
-            scheduleSave()
-        }
+
         // 3. New user
         else {
             print("[Store] Adding NEW discovered user: \(name)")
@@ -221,13 +212,14 @@ final class ChatUserStore: ObservableObject {
     private func scheduleSave() {
         saveWorkItem?.cancel()
         let item = DispatchWorkItem { [weak self] in
-            self?.saveUsers()
+            // Capture snapshot immediately on Main Thread, save in background
+            guard let self = self else { return }
+            let snapshot = self.users
+            PersistenceService.shared.save(snapshot, key: self.storageKey)
         }
         saveWorkItem = item
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0, execute: item)
     }
-    
-    // ... markUserOffline also needs to call scheduleSave()
     
     private func startUserDiscovery() {
         Task.detached {
@@ -258,25 +250,14 @@ final class ChatUserStore: ObservableObject {
         }
     }
     
-    private let saveQueue = DispatchQueue(label: "com.chatx509.userstore.save", qos: .background)
-    
     private func saveUsers() {
-        let snapshot = self.users
-        let key = self.storageKey
-        
-        saveQueue.async {
-            if let data = try? JSONEncoder().encode(snapshot) {
-                UserDefaults.standard.set(data, forKey: key)
-            }
-        }
+        PersistenceService.shared.save(users, key: storageKey)
     }
     
     private func loadUsers() {
-        guard let data = UserDefaults.standard.data(forKey: storageKey),
-              let decoded = try? JSONDecoder().decode([ChatUser].self, from: data) else {
-            return
+        if let loaded: [ChatUser] = PersistenceService.shared.load(key: storageKey) {
+            users = loaded
         }
-        users = decoded
     }
     
     private func seedDefaultUsers() {

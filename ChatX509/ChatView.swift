@@ -322,17 +322,21 @@ struct ChatView: View {
      
      private func stopRecordingAndSend() {
          if let (url, duration) = voiceRecorder.stopRecording() {
-             do {
-                 let data = try Data(contentsOf: url)
-                 let fileName = url.lastPathComponent
-                 messageStore.sendMessage(
-                    "Voice Message (\(Int(duration))s)",
-                    attachment: data,
-                    attachmentName: fileName,
-                    attachmentMime: "audio/m4a"
-                 )
-             } catch {
-                 print("Failed to read voice msg: \(error)")
+             Task.detached(priority: .userInitiated) {
+                 do {
+                     let data = try Data(contentsOf: url)
+                     let fileName = url.lastPathComponent
+                     await MainActor.run {
+                         messageStore.sendMessage(
+                            "Voice Message (\(Int(duration))s)",
+                            attachment: data,
+                            attachmentName: fileName,
+                            attachmentMime: "audio/m4a"
+                         )
+                     }
+                 } catch {
+                     print("Failed to read voice msg: \(error)")
+                 }
              }
          }
      }

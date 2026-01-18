@@ -382,25 +382,16 @@ final class ChatMessageStore: ObservableObject {
         }
     }
     
-    static let persistenceQueue = DispatchQueue(label: "com.chatx509.messagestore.persistence", qos: .background)
-
     private func saveMessages() {
         let snapshot = self.messages
         let key = self.storageKey
-        
-        Self.persistenceQueue.async {
-            if let data = try? JSONEncoder().encode(snapshot) {
-                UserDefaults.standard.set(data, forKey: key)
-            }
-        }
+        PersistenceService.shared.save(snapshot, key: key)
     }
     
     private func loadMessages() {
-        guard let data = UserDefaults.standard.data(forKey: storageKey),
-              let decoded = try? JSONDecoder().decode([ChatMessage].self, from: data) else {
-            return
+        if let decoded: [ChatMessage] = PersistenceService.shared.load(key: storageKey) {
+            messages = decoded
         }
-        messages = decoded
     }
     
     // MARK: - Static Message Storage (for GlobalMessageService)
@@ -408,29 +399,17 @@ final class ChatMessageStore: ObservableObject {
     /// Save a message to a user's chat storage (called from GlobalMessageService)
     static func saveMessageToChat(userId: UUID, message: ChatMessage) {
         let storageKey = "messages_\(userId.uuidString)"
-        var messages: [ChatMessage] = []
         
-        // Load existing
-        if let data = UserDefaults.standard.data(forKey: storageKey),
-           let decoded = try? JSONDecoder().decode([ChatMessage].self, from: data) {
-            messages = decoded
-        }
-        
-        // Append new message if not duplicate
-        if !messages.contains(where: { $0.id == message.id }) {
-            messages.append(message)
-        }
-        
-        // Save using the shared static queue to prevent races and Main Thread blocks
-        persistenceQueue.async {
-            // Re-load latest to ensure we append to most recent state (in case Instance wrote recently)
+        // Use PersistenceService queue to ensure serial access
+        PersistenceService.shared.performAsyncUpdate {
             var currentMessages: [ChatMessage] = []
+            // Load synchronously inside the background block
             if let data = UserDefaults.standard.data(forKey: storageKey),
                let decoded = try? JSONDecoder().decode([ChatMessage].self, from: data) {
                  currentMessages = decoded
             }
             
-            // Check duplicate again in case it was added while waiting in queue
+            // Check duplicate
             if !currentMessages.contains(where: { $0.id == message.id }) {
                 currentMessages.append(message)
                 
@@ -445,7 +424,7 @@ final class ChatMessageStore: ObservableObject {
     static func markMessageAsDelivered(userId: UUID, messageId: UUID) {
         let storageKey = "messages_\(userId.uuidString)"
         
-        persistenceQueue.async {
+        PersistenceService.shared.performAsyncUpdate {
             // Load
             guard let data = UserDefaults.standard.data(forKey: storageKey),
                   var messages = try? JSONDecoder().decode([ChatMessage].self, from: data) else {
