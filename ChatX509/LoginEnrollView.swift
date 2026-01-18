@@ -289,7 +289,7 @@ struct LoginEnrollView: View {
         
         // Trigger immediate discovery announce
         Task {
-            await UserDiscoveryService.shared.announceIdentityWithRetry()
+            await UserDiscoveryService.shared.announceNow()
         }
         
         NotificationCenter.default.post(name: .userDidConnect, object: nil)

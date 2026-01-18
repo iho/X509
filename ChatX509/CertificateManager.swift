@@ -39,11 +39,20 @@ enum CertificateImportError: LocalizedError {
 final class CertificateManager: ObservableObject {
     static let shared = CertificateManager()
     
-    // MARK: - Published State
+    // MARK: - Thread-Safe State (Locked Storage)
+    private let stateLock = NSLock()
+    private var locked_currentCertificate: AuthenticationFramework_Certificate?
+    private var locked_currentPrivateKey: P256.Signing.PrivateKey?
+    private var locked_username: String = ""
+    private var locked_isImportedKey: Bool = false
+    private var locked_expirationDate: Date?
+    private var locked_isExpired: Bool = false
+    
+    // MARK: - Published State (Main Actor)
     @Published private(set) var currentCertificate: AuthenticationFramework_Certificate?
     @Published private(set) var currentPrivateKey: P256.Signing.PrivateKey?
     @Published var username: String = ""
-    @Published private(set) var isImportedKey: Bool = false  // Tracks if key was imported (no rotation)
+    @Published private(set) var isImportedKey: Bool = false
     @Published private(set) var expirationDate: Date?
     @Published private(set) var isExpired: Bool = false
     
@@ -55,7 +64,9 @@ final class CertificateManager: ObservableObject {
     
     /// Returns true if user has enrolled (username is saved)
     var isEnrolled: Bool {
-        !username.isEmpty
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return !locked_username.isEmpty
     }
     
     // OIDs
@@ -72,24 +83,26 @@ final class CertificateManager: ObservableObject {
     
     private init() {
         // Load saved settings
-        username = UserDefaults.standard.string(forKey: usernameKey) ?? ""
-        isImportedKey = UserDefaults.standard.bool(forKey: isImportedKeyKey)
+        let loadedUsername = UserDefaults.standard.string(forKey: usernameKey) ?? ""
+        let loadedIsImported = UserDefaults.standard.bool(forKey: isImportedKeyKey)
+        
+        self.username = loadedUsername
+        self.locked_username = loadedUsername
+        self.isImportedKey = loadedIsImported
+        self.locked_isImportedKey = loadedIsImported
         
         // Attempt to load existing identity
         if let savedBundle = UserDefaults.standard.data(forKey: identityKey) {
             print("Found saved identity, loading...")
             if !loadIdentity(from: savedBundle) {
                 print("Failed to load saved identity, generating new one...")
-                if !username.isEmpty {
+                if !loadedUsername.isEmpty {
                     generateNewIdentity()
                 }
             } else {
-                // Identity loaded, start rotation if it's not an imported key
-                if !isImportedKey && !username.isEmpty {
-                    // startRotationTimer() // Disabled for stable storage
-                }
+                // Identity loaded
             }
-        } else if !username.isEmpty {
+        } else if !loadedUsername.isEmpty {
             // No identity but username exists, generate new
             generateNewIdentity()
         }
@@ -97,30 +110,93 @@ final class CertificateManager: ObservableObject {
         startExpirationCheck()
     }
     
+    // MARK: - Thread-Safe Accessors
+    
+    /// Thread-safe access to identity components for background networking
+    /// Returns (username, certificate, privateKey) if enrolled
+    func getIdentity() -> (String, AuthenticationFramework_Certificate, P256.Signing.PrivateKey)? {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        
+        guard let cert = locked_currentCertificate,
+              let key = locked_currentPrivateKey,
+              !locked_username.isEmpty else {
+            return nil
+        }
+        return (locked_username, cert, key)
+    }
+    
+    private func updateState(username: String? = nil,
+                           certificate: AuthenticationFramework_Certificate? = nil,
+                           privateKey: P256.Signing.PrivateKey? = nil,
+                           isImported: Bool? = nil,
+                           expiration: Date? = nil) {
+        stateLock.lock()
+        if let u = username { locked_username = u }
+        if let c = certificate { locked_currentCertificate = c }
+        if let k = privateKey { locked_currentPrivateKey = k }
+        if let i = isImported { locked_isImportedKey = i }
+        if let e = expiration { locked_expirationDate = e }
+        
+        // Capture new state for Main Actor update
+        let newUsername = locked_username
+        let newCert = locked_currentCertificate
+        let newKey = locked_currentPrivateKey
+        let newImported = locked_isImportedKey
+        let newExpiration = locked_expirationDate
+        stateLock.unlock()
+        
+        DispatchQueue.main.async {
+            self.username = newUsername
+            self.currentCertificate = newCert
+            self.currentPrivateKey = newKey
+            self.isImportedKey = newImported
+            self.expirationDate = newExpiration
+        }
+    }
+    
     private func startExpirationCheck() {
-        expirationCheckTimer?.invalidate()
-        expirationCheckTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
-            self?.checkExpiration()
+        DispatchQueue.main.async {
+            self.expirationCheckTimer?.invalidate()
+            self.expirationCheckTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+                self?.checkExpiration()
+            }
         }
     }
     
     func checkExpiration() {
-        guard let expirationDate = expirationDate else {
-            if isExpired {
-                DispatchQueue.main.async { self.isExpired = false }
+        stateLock.lock()
+        let expDate = locked_expirationDate
+        let isExpiredState = locked_isExpired
+        stateLock.unlock()
+        
+        guard let expirationDate = expDate else {
+            DispatchQueue.main.async {
+                if self.isExpired { self.isExpired = false }
+            }
+            if isExpiredState {
+                stateLock.lock()
+                locked_isExpired = false
+                stateLock.unlock()
             }
             return
         }
+        
         let now = Date()
         let expired = now >= expirationDate
-        if isExpired != expired {
-            DispatchQueue.main.async {
+        
+        DispatchQueue.main.async {
+            if self.isExpired != expired {
                 self.isExpired = expired
                 if expired {
                     print("Identity has expired!")
                 }
             }
         }
+        
+        stateLock.lock()
+        locked_isExpired = expired
+        stateLock.unlock()
     }
     
     private func extractDate(from time: AuthenticationFramework_Time) -> Date? {
@@ -189,7 +265,7 @@ final class CertificateManager: ObservableObject {
     }
     
     func startRotation(username: String) {
-        self.username = username
+        updateState(username: username)
         UserDefaults.standard.set(username, forKey: usernameKey)
         
         generateNewIdentity()
@@ -199,15 +275,6 @@ final class CertificateManager: ObservableObject {
     private func startRotationTimer() {
         rotationTimer?.invalidate()
         // Temporary: Disable auto-rotation to ensure that local file storage remains decryptable.
-        // If we rotate, the Serial Number changes, and stored encrypted files (which expect the old Serial Number)
-        // become unreadable unless we migrate them or keep old keys.
-        // For MVP Secure Storage: Identity is stable.
-        
-        /*
-        rotationTimer = Timer.scheduledTimer(withTimeInterval: 1800, repeats: true) { [weak self] _ in
-            self?.generateNewIdentity()
-        }
-         */
     }
     
     // MARK: - Identity Import/Export
@@ -215,8 +282,13 @@ final class CertificateManager: ObservableObject {
     /// Export current identity as a bundle (private key + certificate)
     /// Format: [4 bytes key length][raw private key][certificate DER]
     func exportIdentity() -> Data? {
-        guard let privateKey = currentPrivateKey,
-              let certificate = currentCertificate else {
+        stateLock.lock()
+        let privateKey = locked_currentPrivateKey
+        let certificate = locked_currentCertificate
+        stateLock.unlock()
+        
+        guard let privateKey = privateKey,
+              let certificate = certificate else {
             return nil
         }
         
@@ -262,9 +334,13 @@ final class CertificateManager: ObservableObject {
             let privateKey = try P256.Signing.PrivateKey(rawRepresentation: keyData)
             let certificate = try AuthenticationFramework_Certificate(derEncoded: ArraySlice(certDer))
             
-            self.currentPrivateKey = privateKey
-            self.currentCertificate = certificate
-            self.expirationDate = self.extractDate(from: certificate.toBeSigned.validity.notAfter)
+            self.updateState(
+                username: nil, // don't overwrite if not changing
+                certificate: certificate,
+                privateKey: privateKey,
+                isImported: nil,
+                expiration: self.extractDate(from: certificate.toBeSigned.validity.notAfter)
+            )
             self.checkExpiration()
             
             return true
@@ -307,29 +383,33 @@ final class CertificateManager: ObservableObject {
             let privateKey = try P256.Signing.PrivateKey(rawRepresentation: keyData)
             let certificate = try AuthenticationFramework_Certificate(derEncoded: ArraySlice(certDer))
             
+            // Extract username from certificate subject
+            var importedUsername = ""
+            let details = self.extractSubjectDetails(from: certificate)
+            if let cn = details["Common Name (CN)"] {
+                importedUsername = cn
+            }
+            
             // Set the imported identity
+            // Update state safely
+            self.updateState(
+                username: importedUsername.isEmpty ? nil : importedUsername,
+                certificate: certificate,
+                privateKey: privateKey,
+                isImported: true,
+                expiration: self.extractDate(from: certificate.toBeSigned.validity.notAfter)
+            )
+            
             DispatchQueue.main.async {
                 // Stop rotation - imported identities don't rotate
                 self.rotationTimer?.invalidate()
                 self.rotationTimer = nil
-                self.isImportedKey = true
                 UserDefaults.standard.set(true, forKey: self.isImportedKeyKey)
                 
-                // Extract username from certificate subject
-                var importedUsername = ""
-                let details = self.extractSubjectDetails(from: certificate)
-                if let cn = details["Common Name (CN)"] {
-                    importedUsername = cn
-                }
-                
                 if !importedUsername.isEmpty {
-                    self.username = importedUsername
                     UserDefaults.standard.set(importedUsername, forKey: self.usernameKey)
                 }
                 
-                self.currentPrivateKey = privateKey
-                self.currentCertificate = certificate
-                self.expirationDate = self.extractDate(from: certificate.toBeSigned.validity.notAfter)
                 self.checkExpiration()
                 
                 // PERSIST the imported identity immediately
@@ -337,9 +417,9 @@ final class CertificateManager: ObservableObject {
                 
                 print("Imported and saved identity for \(self.username), expires: \(self.expirationDate?.description ?? "unknown")")
                 
-                // Trigger discovery announce after identity is ready
+                // Trigger full service restart
                 Task {
-                    await UserDiscoveryService.shared.restart()
+                    await ServiceSupervisor.shared.restartAllServices()
                 }
             }
             
@@ -357,11 +437,15 @@ final class CertificateManager: ObservableObject {
         // Stop rotation timer - imported keys don't rotate
         rotationTimer?.invalidate()
         rotationTimer = nil
-        isImportedKey = true
+        // isImportedKey updated in generateCertificate -> updateState
         UserDefaults.standard.set(true, forKey: isImportedKeyKey)
         
         // Generate certificate with the imported key (1 year validity)
-        generateCertificate(for: privateKey, validity: 365 * 24 * 60 * 60)
+        // Pass isImported: true to ensure state is set correctly
+        stateLock.lock()
+        let name = locked_username
+        stateLock.unlock()
+        generateCertificate(for: privateKey, validity: 365 * 24 * 60 * 60, isImported: true, username: name)
         
         print("Imported external private key - rotation disabled")
     }
@@ -373,12 +457,31 @@ final class CertificateManager: ObservableObject {
         expirationCheckTimer?.invalidate()
         expirationCheckTimer = nil
         
-        currentCertificate = nil
-        currentPrivateKey = nil
-        username = ""
-        isImportedKey = false
-        expirationDate = nil
-        isExpired = false
+        updateState(
+            username: "",
+            certificate: nil,
+            privateKey: nil,
+            isImported: false,
+            expiration: nil
+        )
+        
+        stateLock.lock()
+        locked_currentCertificate = nil
+        locked_currentPrivateKey = nil
+        locked_username = ""
+        locked_isImportedKey = false
+        locked_expirationDate = nil
+        locked_isExpired = false
+        stateLock.unlock()
+        
+        DispatchQueue.main.async {
+            self.currentCertificate = nil
+            self.currentPrivateKey = nil
+            self.username = ""
+            self.isImportedKey = false
+            self.expirationDate = nil
+            self.isExpired = false
+        }
         
         // Clear from UserDefaults
         UserDefaults.standard.removeObject(forKey: usernameKey)
@@ -387,23 +490,31 @@ final class CertificateManager: ObservableObject {
         
         print("Identity and persistence cleared")
         
-        // Restart discovery to reflect offline status/change
+        // Restart services to reflect offline status
         Task {
-            await UserDiscoveryService.shared.restart()
+            await ServiceSupervisor.shared.restartAllServices()
         }
     }
     
     /// Generate new identity with fresh key (30-minute validity, auto-rotates)
     func generateNewIdentity() {
-        isImportedKey = false
-        let privateKey = P256.Signing.PrivateKey()
-        generateCertificate(for: privateKey, validity: 1800) // 30 minutes
+        print("[CertManager] generateNewIdentity called!")
+        stateLock.lock()
+        let name = locked_username
+        stateLock.unlock()
+        
+        Task.detached { [weak self] in
+            // isImportedKey = false will be handled in generateCertificate
+            let privateKey = P256.Signing.PrivateKey()
+            self?.generateCertificate(for: privateKey, validity: 1800, isImported: false, username: name) // 30 minutes
+        }
     }
     
     /// Generate a certificate for the given private key
-    private func generateCertificate(for privateKey: P256.Signing.PrivateKey, validity: TimeInterval) {
+    nonisolated private func generateCertificate(for privateKey: P256.Signing.PrivateKey, validity: TimeInterval, isImported: Bool, username: String) {
         do {
             print("Generating certificate for \(username)...")
+
             let publicKey = privateKey.publicKey
             
             // 1. Create Name (CommonName = username)
@@ -477,10 +588,14 @@ final class CertificateManager: ObservableObject {
             )
             
             // Update State
+            self.updateState(
+                certificate: cert,
+                privateKey: privateKey,
+                isImported: isImported,
+                expiration: expiry
+            )
+            
             DispatchQueue.main.async {
-                self.currentPrivateKey = privateKey
-                self.currentCertificate = cert
-                self.expirationDate = expiry
                 self.checkExpiration()
                 
                 // SAVE generated identity
@@ -488,9 +603,9 @@ final class CertificateManager: ObservableObject {
                 
                 print("Certificate generated and saved successfully. Expiry: \(expiry)")
                 
-                // Trigger discovery announce after identity is ready
+                // Trigger full service restart
                 Task {
-                    await UserDiscoveryService.shared.restart()
+                    await ServiceSupervisor.shared.restartAllServices()
                 }
             }
             

@@ -29,10 +29,7 @@ struct chat509App: App {
     @State private var backgroundTaskID: UIBackgroundTaskIdentifier = .invalid
     
     init() {
-        // Start global message listener
-        Task {
-            await GlobalMessageService.shared.start()
-        }
+        // Init logic (if any)
     }
     
     var body: some Scene {

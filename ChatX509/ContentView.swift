@@ -63,6 +63,15 @@ struct ContentView: View {
                 currentScreen = .setup
             }
         }
+        .onAppear {
+            Task {
+                // Use Supervisor to start ALL services (Multicast, GlobalListen, Discovery, Sender)
+                // blocking the main thread less than individual starts might.
+                // We use 'restartAllServices' because it cleanly stops/starts everything,
+                // ensuring fresh sockets on app launch/re-launch.
+                await ServiceSupervisor.shared.restartAllServices()
+            }
+        }
     }
 }
 

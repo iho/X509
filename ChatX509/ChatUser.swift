@@ -66,7 +66,7 @@ final class ChatUserStore: ObservableObject {
         if users.isEmpty {
             seedDefaultUsers()
         }
-        startUserDiscovery()
+        startUserDiscovery() 
     }
     
     func addUser(_ user: ChatUser) {
@@ -77,6 +77,22 @@ final class ChatUserStore: ObservableObject {
     func removeUser(_ user: ChatUser) {
         users.removeAll { $0.id == user.id }
         saveUsers()
+    }
+    
+    /// Mark a user as offline by serial number
+    func markUserOffline(serialNumber: Data) {
+        if let index = users.firstIndex(where: { $0.serialNumber == serialNumber }) {
+            users[index].isOnline = false
+            scheduleSave()
+        }
+    }
+    
+    /// Legacy: Mark a user as offline by name (if serial unknown)
+    func markUserOffline(name: String) {
+        if let index = users.firstIndex(where: { $0.name == name }) {
+            users[index].isOnline = false
+            scheduleSave()
+        }
     }
     
     func updateUser(_ user: ChatUser) {
@@ -133,80 +149,7 @@ final class ChatUserStore: ObservableObject {
         let messageKey = "messages_\(user.id.uuidString)"
         UserDefaults.standard.removeObject(forKey: messageKey)
     }
-    
-    // MARK: - Discovery Methods
-    
-    /// Add or update a user discovered on the network
-    /// Add or update a user discovered on the network
-    func addOrUpdateDiscoveredUser(name: String, certificateData: Data, serialNumber: Data, isOnline: Bool) {
-        
-        // Parse Certificate to get full subject (CN, O, etc.)
-        var fullSubject = "CN=\(name)"
-        var organization: String?
-        
-        if let cert = try? AuthenticationFramework_Certificate(derEncoded: ArraySlice(certificateData)) {
-            let details = CertificateManager.shared.extractSubjectDetails(from: cert)
-            var parts: [String] = []
-            if let cn = details["Common Name (CN)"] { parts.append("CN=\(cn)") } else { parts.append("CN=\(name)") }
-            if let org = details["Organization (O)"] { 
-                parts.append("O=\(org)")
-                organization = org
-            }
-            if let ou = details["Organizational Unit (OU)"] { parts.append("OU=\(ou)") }
-            fullSubject = parts.joined(separator: ", ")
-        }
 
-        // 1. Try to find by serial number (exact identity match)
-        if let index = users.firstIndex(where: { $0.serialNumber == serialNumber }) {
-            users[index].name = name
-            users[index].certificateSubject = fullSubject
-            users[index].certificateData = certificateData
-            users[index].lastSeen = Date()
-            users[index].isOnline = isOnline
-            users[index].isDiscovered = true
-        } 
-        // 2. Try to find by name (identity rotation/regeneration case)
-        else if let index = users.firstIndex(where: { $0.name == name }) {
-            print("User '\(name)' rotated identity (new serial). Updating credentials.")
-            users[index].serialNumber = serialNumber
-            users[index].certificateSubject = fullSubject
-            users[index].certificateData = certificateData
-            users[index].lastSeen = Date()
-            users[index].isOnline = isOnline
-            // Keep existing messages/history
-        }
-        // 3. New user
-        else {
-            let newUser = ChatUser(
-                name: name,
-                certificateSubject: fullSubject,
-                isOnline: isOnline,
-                certificateData: certificateData,
-                serialNumber: serialNumber,
-                lastSeen: Date(),
-                isDiscovered: true
-            )
-            users.append(newUser)
-        }
-        saveUsers()
-    }
-    
-    /// Mark a user as offline by serial number
-    func markUserOffline(serialNumber: Data) {
-        if let index = users.firstIndex(where: { $0.serialNumber == serialNumber }) {
-            users[index].isOnline = false
-            saveUsers()
-        }
-    }
-    
-    /// Legacy: Mark a user as offline by name (if serial unknown)
-    func markUserOffline(name: String) {
-        if let index = users.firstIndex(where: { $0.name == name }) {
-            users[index].isOnline = false
-            saveUsers()
-        }
-    }
-    
     /// Get user by name
     func getUserByName(_ name: String) -> ChatUser? {
         return users.first { $0.name == name }
@@ -217,27 +160,94 @@ final class ChatUserStore: ObservableObject {
         return users.first { $0.name == userName }?.certificateData
     }
     
-    // MARK: - Private Methods
+    // MARK: - Discovery Methods
+    
+    /// Add or update a user discovered on the network
+    /// Add or update a user discovered on the network
+    func addOrUpdateDiscoveredUser(name: String, certificateSubject: String, certificateData: Data, serialNumber: Data, isOnline: Bool) {
+        
+        // 1. Try to find by serial number (exact identity match)
+        if let index = users.firstIndex(where: { $0.serialNumber == serialNumber }) {
+            // Update fields
+            var changed = false
+            if users[index].name != name { users[index].name = name; changed = true }
+            if users[index].certificateSubject != certificateSubject { users[index].certificateSubject = certificateSubject; changed = true }
+            if users[index].isOnline != isOnline { users[index].isOnline = isOnline; changed = true }
+            // Only update lastSeen if changed significantly (e.g. > 60s) to avoid UI churn
+            if let last = users[index].lastSeen {
+                if Date().timeIntervalSince(last) > 30 {
+                    users[index].lastSeen = Date()
+                    // Don't mark as changed for save just for lastSeen update? 
+                    // Or do we want to persist it? Persisting constantly is bad.
+                    // Let's rely on internal state for timeout, save only periodically.
+                }
+            } else {
+                users[index].lastSeen = Date()
+                changed = true
+            }
+            
+            if changed { scheduleSave() }
+        } 
+        // 2. Try to find by name (identity rotation/regeneration case)
+        else if let index = users.firstIndex(where: { $0.name == name }) {
+            print("User '\(name)' rotated identity (new serial). Updating credentials.")
+            users[index].serialNumber = serialNumber
+            users[index].certificateSubject = certificateSubject
+            users[index].certificateData = certificateData
+            users[index].lastSeen = Date()
+            users[index].isOnline = isOnline
+            scheduleSave()
+        }
+        // 3. New user
+        else {
+            let newUser = ChatUser(
+                name: name,
+                certificateSubject: certificateSubject,
+                isOnline: isOnline,
+                certificateData: certificateData,
+                serialNumber: serialNumber,
+                lastSeen: Date(),
+                isDiscovered: true
+            )
+            users.append(newUser)
+            scheduleSave()
+        }
+    }
+    
+    // Debounce Save (2 seconds)
+    private var saveWorkItem: DispatchWorkItem?
+    
+    private func scheduleSave() {
+        saveWorkItem?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            self?.saveUsers()
+        }
+        saveWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0, execute: item)
+    }
+    
+    // ... markUserOffline also needs to call scheduleSave()
     
     private func startUserDiscovery() {
-        Task {
+        Task.detached {
             await UserDiscoveryService.shared.start(
-                onUserDiscovered: { [weak self] discoveredUser in
+                onUserDiscovered: { discoveredUser in
                     Task { @MainActor in
-                        self?.addOrUpdateDiscoveredUser(
+                        ChatUserStore.shared.addOrUpdateDiscoveredUser(
                             name: discoveredUser.username,
+                            certificateSubject: discoveredUser.certificateSubject,
                             certificateData: discoveredUser.certificateData,
                             serialNumber: discoveredUser.serialNumber,
                             isOnline: discoveredUser.isOnline
                         )
                     }
                 },
-                onUserOffline: { [weak self] username, serial in
+                onUserOffline: { username, serial in
                     Task { @MainActor in
                         if let serial = serial {
-                            self?.markUserOffline(serialNumber: serial)
+                            ChatUserStore.shared.markUserOffline(serialNumber: serial)
                         } else {
-                            self?.markUserOffline(name: username)
+                            ChatUserStore.shared.markUserOffline(name: username)
                         }
                     }
                 }
@@ -245,9 +255,16 @@ final class ChatUserStore: ObservableObject {
         }
     }
     
+    private let saveQueue = DispatchQueue(label: "com.chatx509.userstore.save", qos: .background)
+    
     private func saveUsers() {
-        if let data = try? JSONEncoder().encode(users) {
-            UserDefaults.standard.set(data, forKey: storageKey)
+        let snapshot = self.users
+        let key = self.storageKey
+        
+        saveQueue.async {
+            if let data = try? JSONEncoder().encode(snapshot) {
+                UserDefaults.standard.set(data, forKey: key)
+            }
         }
     }
     

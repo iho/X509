@@ -10,16 +10,19 @@ import SwiftASN1
 import CryptoKit
 import Combine
 
-/// Service for automatic discovery of users on the local network
-/// Uses UDP multicast to announce presence and discover peers
-actor UserDiscoveryService {
+/// Service for automatic discovery of users on the local network (Announce Looper)
+/// "Announce Looper starts on application load... sends 5 identical announcement messages every 10 seconds"
+final class UserDiscoveryService: @unchecked Sendable {
     static let shared = UserDiscoveryService()
     
     // Configuration
-    private let announceInterval: TimeInterval = 1 // sent presence every 1 second as requested
-    private let staleTimeout: TimeInterval = 60 // Mark offline after 60s without announcement
+    private let announceInterval: TimeInterval = 10 // Protocol v1: 10 seconds
+    private let burstCount = 5
+    private let burstSpacing: UInt64 = 100_000_000 // 100ms
+    private let staleTimeout: TimeInterval = 65 // Mark offline after > 60s
     
     // State
+    private let serviceLock = NSLock()
     private var isRunning = false
     private var announceTask: Task<Void, Never>?
     private var listenTask: Task<Void, Never>?
@@ -41,30 +44,35 @@ actor UserDiscoveryService {
     
     /// Start the discovery service
     func start(onUserDiscovered: @escaping (DiscoveredUser) -> Void, onUserOffline: @escaping (String, Data?) -> Void) {
-        guard !isRunning else { return }
+        serviceLock.lock()
+        if isRunning {
+            serviceLock.unlock()
+            return
+        }
         isRunning = true
         
         self.onUserDiscovered = onUserDiscovered
         self.onUserOffline = onUserOffline
+        serviceLock.unlock()
         
-        // Start multicast service
-        Task {
-            await multicast.start()
+        // Start multicast service in background
+        Task.detached { [weak self] in
+            self?.multicast.start()
         }
         
-        // Start announcing presence
-        announceTask = Task {
-            await announceLoop()
+        // Start announcing presence (Announce Looper)
+        announceTask = Task.detached { [weak self] in
+            await self?.announceLoop()
         }
         
-        // Start listening for others
-        listenTask = Task {
-            await listenForPresence()
+        // Start listening for others (Presence updates)
+        listenTask = Task.detached { [weak self] in
+            await self?.listenForPresence()
         }
         
         // Start stale user cleanup
-        Task {
-            await cleanupLoop()
+        Task.detached { [weak self] in
+            await self?.cleanupLoop()
         }
         
         print("[Discovery] UserDiscoveryService started")
@@ -72,7 +80,10 @@ actor UserDiscoveryService {
     
     /// Stop the discovery service
     func stop() {
+        serviceLock.lock()
         isRunning = false
+        serviceLock.unlock()
+        
         announceTask?.cancel()
         listenTask?.cancel()
         print("UserDiscoveryService stopped")
@@ -80,64 +91,63 @@ actor UserDiscoveryService {
     
     /// Announce presence immediately (useful when coming online)
     func announceNow() async {
-        await announcePresence(status: .online)
-    }
-    
-    /// Announce presence with retries to ensure delivery (e.g. after new certificate generation)
-    func announceIdentityWithRetry(attempts: Int = 5, delay: TimeInterval = 0.5) async {
-        print("[Discovery] Starting burst announcement of new identity (\(attempts) attempts)...")
-        for i in 1...attempts {
-            await announcePresence(status: .online)
-            if i < attempts {
-                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-            }
-        }
-        print("[Discovery] Burst announcement complete.")
+        // Trigger a burst immediately
+        await announcePresenceBurst(status: .online)
     }
     
     /// Restart discovery service (e.g. after identity change)
-    func restart() {
-        guard isRunning else { return }
-        print("[Discovery] Restarting service...")
-        
+    func restart() async {
+        serviceLock.lock()
+        let wasRunning = isRunning
         // Save callbacks
         let onDiscovered = self.onUserDiscovered
         let onOffline = self.onUserOffline
+        serviceLock.unlock()
         
-        stop()
+        if wasRunning {
+             stop()
+             // Wait for tasks to clear? 
+             try? await Task.sleep(nanoseconds: 500_000_000)
+             
+             if let onDiscovered = onDiscovered, let onOffline = onOffline {
+                 start(onUserDiscovered: onDiscovered, onUserOffline: onOffline)
+             }
+        }
         
-        // Restart with saved callbacks
-        if let onDiscovered = onDiscovered, let onOffline = onOffline {
-            start(onUserDiscovered: onDiscovered, onUserOffline: onOffline)
+        // If not running, just announce once?
+        if !wasRunning {
+            await announceNow()
         }
     }
     
     // MARK: - Private Implementation
     
     private func announceLoop() async {
-        while isRunning {
-            await announcePresence(status: .online)
+        while true {
+            // Check running
+            serviceLock.lock()
+            let running = isRunning
+            serviceLock.unlock()
+            if !running { break }
+            
+            await announcePresenceBurst(status: .online)
+            
+            // Wait 10 seconds
             try? await Task.sleep(nanoseconds: UInt64(announceInterval * 1_000_000_000))
         }
     }
     
-    private func announcePresence(status: CHAT_PresenceType) async {
+    private func announcePresenceBurst(status: CHAT_PresenceType) async {
+        // Prepare data ONCE
         // Get our identity
-        let username = await MainActor.run { certificateManager.username }
-        guard !username.isEmpty else {
-            print("[Discovery] Skipping announce - no username set")
-            return
+        guard let (username, certificate, _) = certificateManager.getIdentity() else {
+             // print("[Discovery] Skipping announce - no identity")
+             return
         }
         
-        // Get our certificate (for public key exchange)
-        guard let certificate = await MainActor.run(body: { certificateManager.currentCertificate }) else {
-            print("[Discovery] Skipping announce - no certificate")
-            return
-        }
+        if username.isEmpty { return }
         
-        // print("[Discovery] Announcing presence for: \(username)")
-        
-        // Serialize certificate to DER
+        // Serialize certificate
         var certSerializer = DER.Serializer()
         do {
             try certSerializer.serialize(certificate)
@@ -147,8 +157,7 @@ actor UserDiscoveryService {
         }
         let certDer = certSerializer.serializedBytes
         
-        // Build presence message with certificate embedded in nickname field
-        // Format: username|base64(certificate)
+        // Build presence message
         let certBase64 = Data(certDer).base64EncodedString()
         let combinedNickname = "\(username)|\(certBase64)"
         
@@ -157,23 +166,32 @@ actor UserDiscoveryService {
             status: status
         )
         
-        // Wrap in CHATProtocol
         let chatProtocol = CHAT_CHATProtocol.presence(presence)
         
-        // Serialize and send
         var serializer = DER.Serializer()
         do {
             try serializer.serialize(chatProtocol)
             let data = Data(serializer.serializedBytes)
-            await multicast.send(data: data, address: MulticastService.BROADCAST_GROUP)
+            
+            // Send Burst (5 copies)
+            // print("[Discovery] Announcing presence (burst)...")
+            for i in 0..<burstCount {
+                multicast.send(data: data, address: MulticastService.BROADCAST_GROUP)
+                if i < burstCount - 1 {
+                    try? await Task.sleep(nanoseconds: burstSpacing)
+                }
+            }
         } catch {
             print("Failed to send presence: \(error)")
         }
     }
     
     private func listenForPresence() async {
-        for await data in await multicast.dataStream {
-            guard isRunning else { break }
+        for await data in multicast.dataStream {
+            serviceLock.lock()
+            let running = isRunning
+            serviceLock.unlock()
+            if !running { break }
             
             do {
                 let proto = try CHAT_CHATProtocol(derEncoded: ArraySlice(data))
@@ -192,67 +210,120 @@ actor UserDiscoveryService {
                 let certBase64 = String(parts[1])
                 
                 // Skip our own announcements
-                let myUsername = await MainActor.run { self.certificateManager.username }
-                // print("[Discovery] Received presence from '\(username)', my username is '\(myUsername)'")
-                if username == myUsername {
-                    // print("[Discovery] Skipping own announcement")
+                // Note: certificateManager.username is @Published, use safely
+                if let (myUsername, _, _) = certificateManager.getIdentity(), username == myUsername {
                     continue
                 }
                 
                 // Decode certificate
                 guard let certData = Data(base64Encoded: certBase64) else { continue }
                 
-                // Parse certificate to extract public key
+                // Parse certificate
                 let certificate = try AuthenticationFramework_Certificate(derEncoded: ArraySlice(certData))
                 let publicKeyData = Data(certificate.toBeSigned.subjectPublicKeyInfo.subjectPublicKey.bytes)
                 
-                // Convert to CryptoKit public key for encryption
+                // Convert to CryptoKit public key
                 let encryptionKey = try P256.KeyAgreement.PublicKey(x963Representation: publicKeyData)
                 
                 // Create discovered user
+                // Create discovered user
+                // Parse Subject (Background)
+                let details = certificateManager.extractSubjectDetails(from: certificate)
+                var subjectParts: [String] = []
+                if let cn = details["Common Name (CN)"] { subjectParts.append("CN=\(cn)") } else { subjectParts.append("CN=\(username)") }
+                if let org = details["Organization (O)"] { subjectParts.append("O=\(org)") }
+                if let ou = details["Organizational Unit (OU)"] { subjectParts.append("OU=\(ou)") }
+                let fullSubject = subjectParts.joined(separator: ", ")
+                
                 let discoveredUser = DiscoveredUser(
                     username: username,
                     certificateData: certData,
+                    certificateSubject: fullSubject,
                     serialNumber: Data(certificate.toBeSigned.serialNumber),
                     encryptionPublicKey: encryptionKey,
                     lastSeen: Date(),
                     isOnline: presence.status == .online
                 )
                 
-                // Update last seen and mapping
+                // Update State
+                serviceLock.lock()
+                let previousSeen = lastSeenTimes[username]
+                let previousSerial = usernameToSerial[username]
+                
                 lastSeenTimes[username] = Date()
                 usernameToSerial[username] = Data(certificate.toBeSigned.serialNumber)
                 
-                print("[Discovery] Discovered user: \(username)")
+                let callback = onUserDiscovered
+                serviceLock.unlock()
                 
-                // Notify callback
-                onUserDiscovered?(discoveredUser)
+                // Throttling Logic:
+                // Only notify if:
+                // 1. New user (previousSeen == nil)
+                // 2. Serial changed (Identity rotation)
+                // 3. Status possibly changed (implied by packet arrival? Protocol doesn't have explicit offline packets yet, rely on timeout. But "online" status might be useful if user was offline)
+                // 4. Significant time passed (e.g. > 2 seconds) to avoid burst flooding
+                
+                let isNewUser = previousSeen == nil
+                let isSerialChanged = previousSerial != Data(certificate.toBeSigned.serialNumber)
+                let isThrottled = previousSeen != nil && Date().timeIntervalSince(previousSeen!) < 10.0
+                
+                if isNewUser || isSerialChanged || !isThrottled {
+                    // Notify callback
+                    callback?(discoveredUser)
+                }
                 
             } catch {
-                // Silently ignore non-presence messages or parsing errors
                 continue
             }
         }
     }
     
     private func cleanupLoop() async {
-        while isRunning {
-            try? await Task.sleep(nanoseconds: 30_000_000_000) // Check every 30 seconds
+        while true {
+            // Check running
+            serviceLock.lock()
+            let running = isRunning
+            serviceLock.unlock()
+            if !running { break }
+            
+            try? await Task.sleep(nanoseconds: 30_000_000_000) // 30s
             
             let now = Date()
             var staleUsers: [String] = []
             
+            serviceLock.lock()
             for (username, lastSeen) in lastSeenTimes {
                 if now.timeIntervalSince(lastSeen) > staleTimeout {
                     staleUsers.append(username)
                 }
             }
             
-            for username in staleUsers {
-                let serial = usernameToSerial[username]
-                lastSeenTimes.removeValue(forKey: username)
-                usernameToSerial.removeValue(forKey: username)
-                onUserOffline?(username, serial)
+            var offlineCallback: ((String, Data?) -> Void)? = nil
+            
+            if !staleUsers.isEmpty {
+                 offlineCallback = onUserOffline
+                 for username in staleUsers {
+                     let serial = usernameToSerial[username]
+                     lastSeenTimes.removeValue(forKey: username)
+                     usernameToSerial.removeValue(forKey: username)
+                     // Call callback outside loop? Or inside if thread safe?
+                     // Callback is typically UI update, should be safe or dispatch to Main.
+                     // But we are in lock.
+                 }
+            }
+            // Cannot call callback inside lock if it calls back into service or sleeps.
+            // Copy data needed for callback.
+            let staleInfo: [(String, Data?)] = staleUsers.map { ($0, usernameToSerial[$0]) }
+            // Remove serials after mapping
+            for user in staleUsers {
+                usernameToSerial.removeValue(forKey: user)
+            }
+            serviceLock.unlock()
+            
+            if let callback = offlineCallback {
+                for (user, serial) in staleInfo {
+                    callback(user, serial)
+                }
             }
         }
     }
@@ -263,6 +334,7 @@ actor UserDiscoveryService {
 struct DiscoveredUser: Sendable {
     let username: String
     let certificateData: Data
+    let certificateSubject: String // Pre-parsed subject
     let serialNumber: Data
     let encryptionPublicKey: P256.KeyAgreement.PublicKey
     let lastSeen: Date

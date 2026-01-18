@@ -79,7 +79,7 @@ struct AboutView: View {
                     
                     // Footer
                     VStack(spacing: 4) {
-                        Text("Created with ❤️ by Antigravity")
+                        Text("Created with ❤️ by Zen Crypted")
                             .font(.caption)
                             .foregroundColor(.gray)
                         Text("Copyright © 2026")

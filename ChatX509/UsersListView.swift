@@ -88,16 +88,27 @@ struct UsersListView: View {
                     settingsMenu
                 }
             }
+            /*
             .alert("Identity Expired", isPresented: $showExpirationAlert) {
                 Button("Regenerate", role: .destructive) {
+                    print("[UI] Regenerate button tapped")
+                    showExpirationAlert = false
                     CertificateManager.shared.generateNewIdentity()
                 }
-                Button("Cancel", role: .cancel) { }
+                Button("Cancel", role: .cancel) {
+                    print("[UI] Cancel button tapped")
+                    showExpirationAlert = false
+                }
             } message: {
                 Text("Your identity has expired. Other users won't be able to send you encrypted messages until you regenerate your certificate.")
             }
+            */
             .onReceive(CertificateManager.shared.$isExpired) { expired in
-                if expired { showExpirationAlert = true }
+                // Only update if changed to avoid view refresh cycles
+                if showExpirationAlert != expired {
+                    print("[UI] isExpired changed to \(expired), updating alert")
+                    showExpirationAlert = expired
+                }
             }
             .alert("Delete Chat?", isPresented: .init(
                 get: { userToDelete != nil },

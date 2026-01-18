@@ -20,10 +20,6 @@ struct DebugView: View {
                 Section(header: Text("Multicast Diagnostic")) {
                     if let stats = stats {
                         statRow(label: "Status", value: stats.isRunning ? "Running" : "Stopped", color: stats.isRunning ? .green : .red)
-                        statRow(label: "Interface IP", value: stats.interfaceAddress)
-                        statRow(label: "RX FD", value: "\(stats.receiveSocketFD)")
-                        statRow(label: "TX FD", value: "\(stats.sendSocketFD)")
-                        statRow(label: "Listeners", value: "\(stats.activeListeners)")
                     } else {
                         Text("Loading stats...")
                     }
@@ -33,14 +29,12 @@ struct DebugView: View {
                     if let stats = stats {
                         statRow(label: "Total Sent", value: ByteCountFormatter.string(fromByteCount: Int64(stats.totalBytesSent), countStyle: .file))
                         statRow(label: "Total Received", value: ByteCountFormatter.string(fromByteCount: Int64(stats.totalBytesReceived), countStyle: .file))
-                        statRow(label: "Transctions Processed", value: "\(stats.processedTransactionsCount)")
                     }
                 }
                 
                 Section(header: Text("Queues (Reliability)")) {
                     if let stats = stats {
                         statRow(label: "Pending Assembly", value: "\(stats.pendingMessagesCount)")
-                        statRow(label: "Sent Cache", value: "\(stats.sentMessagesCacheCount)")
                     }
                 }
                 
@@ -79,7 +73,9 @@ struct DebugView: View {
     
     private func fetchStats() {
         Task {
-            let s = await MulticastService.shared.getDebugStats()
+            let s = await Task.detached {
+                MulticastService.shared.getDebugStats()
+            }.value
             await MainActor.run {
                 self.stats = s
             }

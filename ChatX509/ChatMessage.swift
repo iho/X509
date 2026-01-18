@@ -102,9 +102,8 @@ final class ChatMessageStore: ObservableObject {
     
     deinit {
         retryTimer?.cancel()
-        Task {
-            await MulticastService.shared.stop()
-        }
+        // Do NOT stop MulticastService here. It is a shared service used by GlobalMessageService and others.
+        // Stopping it would kill the network for the whole app when a chat view is closed.
     }
     
     private func startRetryLoop() {
@@ -134,262 +133,222 @@ final class ChatMessageStore: ObservableObject {
     }
     
     func sendMessage(_ content: String, attachment: Data? = nil, attachmentName: String? = nil, attachmentMime: String? = nil) {
+        // Capture State on MainActor
         guard let username = certificateManager.username.data(using: .utf8),
               let privateKey = certificateManager.currentPrivateKey else {
             print("[ChatMessageStore] Cannot send message: Missing identity")
             return
         }
-        print("[ChatMessageStore] Preparing to send message to '\(recipientName)'...")
-        
-        // --- 1. Construct Message Components ---
-        
-        // ID (16 bytes random)
-        var idBytes = [UInt8](repeating: 0, count: 16)
-        let _ = SecRandomCopyBytes(kSecRandomDefault, 16, &idBytes)
-        let idOctet = ASN1OctetString(contentBytes: ArraySlice(idBytes))
-        let msgUUID = UUID(uuid: (idBytes[0], idBytes[1], idBytes[2], idBytes[3], idBytes[4], idBytes[5], idBytes[6], idBytes[7], idBytes[8], idBytes[9], idBytes[10], idBytes[11], idBytes[12], idBytes[13], idBytes[14], idBytes[15]))
-        
-        // Sender & Recipient
-        let fromOctet = ASN1OctetString(contentBytes: ArraySlice(username))
-        let toOctet = ASN1OctetString(contentBytes: ArraySlice((recipientName.isEmpty ? "broadcast" : recipientName).utf8))
-        
-        // Time
-        let now = Date()
-        let timeInt = Int64(now.timeIntervalSince1970 * 1000)
-        let createdBytes = ArraySlice(String(timeInt).utf8)
-        
-        // Content - Payload is either text or attachment
-        let rawPayload = attachment ?? Data(content.utf8)
-        let rawMime = attachmentMime ?? "text/plain"
         
         let capturedRecipientName = recipientName
         let capturedUserStore = userStore
         let capturedCmsService = cmsService
+        let capturedMulticast = multicast
+        let capturedCertManager = certificateManager
         
-        // Prepare encryption on background then continue
-        Task {
-            var payloadData = rawPayload
-            var mimeType = rawMime
-            var wasEncrypted = false
-            
-            // Try to encrypt if we have recipient's certificate
-            if !capturedRecipientName.isEmpty {
-                if let certData = await MainActor.run(body: { capturedUserStore.getCertificateData(for: capturedRecipientName) }) {
-                    do {
-                        // Extract public key from certificate
-                        let certificate = try AuthenticationFramework_Certificate(derEncoded: ArraySlice(certData))
-                        let pubKeyBytes = Data(certificate.toBeSigned.subjectPublicKeyInfo.subjectPublicKey.bytes)
-                        let recipientPublicKey = try P256.KeyAgreement.PublicKey(x963Representation: pubKeyBytes)
-                        
-                        // Encrypt with CMS
-                        payloadData = try await capturedCmsService.encrypt(data: payloadData, recipientPublicKey: recipientPublicKey)
-                        mimeType = "application/cms"
-                        wasEncrypted = true
-                        print("Message encrypted with CMS for \(capturedRecipientName)")
-                    } catch {
-                        print("Encryption failed, sending plaintext: \(error)")
-                    }
-                }
-            }
-            
-            // Continue on MainActor
-            await self.finishSendingMessage(
-                idBytes: idBytes,
-                idOctet: idOctet,
-                msgUUID: msgUUID,
-                fromOctet: fromOctet,
-                toOctet: toOctet,
-                createdBytes: createdBytes,
-                payloadData: payloadData,
-                mimeType: mimeType,
-                content: content,
-                now: now,
-                wasEncrypted: wasEncrypted,
-                privateKey: privateKey,
-                attachmentName: attachmentName,
-                originalMime: rawMime, // Pass original mime (text/plain or attachment type)
-                plaintextPayload: rawPayload // NEW: Pass plaintext for local UI
-            )
-        }
-    }
-    
-    private func finishSendingMessage(
-        idBytes: [UInt8],
-        idOctet: ASN1OctetString,
-        msgUUID: UUID,
-        fromOctet: ASN1OctetString,
-        toOctet: ASN1OctetString,
-        createdBytes: ArraySlice<UInt8>,
-        payloadData: Data,
-        mimeType: String,
-        content: String,
-        now: Date,
-        wasEncrypted: Bool,
-        privateKey: P256.Signing.PrivateKey,
-        attachmentName: String?,
-        originalMime: String?,
-        plaintextPayload: Data? // NEW parameter
-    ) {
-        // Payload: OctetString(Data) -> DER -> ASN1Any
-        let payloadOctet = ASN1OctetString(contentBytes: ArraySlice(payloadData))
-        var serializer = DER.Serializer()
-        try! serializer.serialize(payloadOctet)
-        let payloadDer = serializer.serializedBytes
-        let payloadAny = try! ASN1Any(derEncoded: payloadDer)
+        // Prepare initial data
+        let now = Date()
+        let createdBytes = ArraySlice(String(Int64(now.timeIntervalSince1970 * 1000)).utf8)
         
-        let mimeOctet = ASN1OctetString(contentBytes: ArraySlice(mimeType.utf8))
+        // Content
+        let rawPayload = attachment ?? Data(content.utf8)
+        let rawMime = attachmentMime ?? "text/plain"
         
-        // Metadata (Features) regarding file properties
-        var features: [CHAT_Feature] = []
-        let emptyOctet = ASN1OctetString(contentBytes: [])
-        
-        if let name = attachmentName {
-             let key = ASN1OctetString(contentBytes: ArraySlice("filename".utf8))
-             let val = ASN1OctetString(contentBytes: ArraySlice(name.utf8))
-             features.append(CHAT_Feature(id: emptyOctet, key: key, value: val, group: emptyOctet))
-        }
-        
-        if wasEncrypted, let origMime = originalMime {
-             let key = ASN1OctetString(contentBytes: ArraySlice("original-mime".utf8))
-             let val = ASN1OctetString(contentBytes: ArraySlice(origMime.utf8))
-             features.append(CHAT_Feature(id: emptyOctet, key: key, value: val, group: emptyOctet))
-        }
-        
-        let file = CHAT_FileDesc(
-            id: idOctet,
-            mime: mimeOctet,
-            payload: payloadAny,
-            parentid: emptyOctet,
-            data: features
-        )
-        
-        // --- 2. Sign ---
-        var seqSerializer = DER.Serializer()
-        try! seqSerializer.serializeSequenceOf([file])
-        let filesSequenceDer = seqSerializer.serializedBytes
-        var tbsData = Data(idBytes)
-        tbsData.append(Data(fromOctet.bytes))
-        tbsData.append(Data(toOctet.bytes))
-        tbsData.append(contentsOf: filesSequenceDer)
-        
-        var sigOctet = ASN1OctetString(contentBytes: [])
-        do {
-            let signature = try privateKey.signature(for: tbsData)
-            sigOctet = ASN1OctetString(contentBytes: ArraySlice(signature.rawRepresentation))
-        } catch {
-            print("Signing failed: \(error)")
-            return
-        }
-        
-        // --- 3. Assemble CHAT_Message ---
-        let chatMsg = CHAT_Message(
-            id: idOctet,
-            feed_id: .p2p(CHAT_P2P(src: fromOctet, dst: toOctet)),
-            signature: sigOctet,
-            from: fromOctet,
-            to: toOctet,
-            created: createdBytes,
-            files: [file],
-            type: CHAT_MessageType(rawValue: 1),
-            link: [],
-            seenby: ASN1OctetString(contentBytes: []),
-            repliedby: ASN1OctetString(contentBytes: []),
-            mentioned: [],
-            status: CHAT_MessageStatus(rawValue: 0)
-        )
-        
-        // --- 4. Serialize & Send ---
-        let protocolMsg = CHAT_CHATProtocol.message(chatMsg)
-        do {
-            var msgSerializer = DER.Serializer()
-            try msgSerializer.serialize(protocolMsg)
-            let msgDer = msgSerializer.serializedBytes
-            
-            // Secure Storage: Save local copy
-            Task {
-                var savedPath: String?
-                let dataToSave = plaintextPayload ?? payloadData
+        // Capture UI updates closure
+        let updateUI = { (msgUUID: UUID, wasEncrypted: Bool, savedPath: String?, msgDer: Data) in
+            Task { @MainActor [weak self] in
+                guard let self = self else { return }
                 
-                if attachmentName != nil { // It's a file
-                    do {
-                        let ext = attachmentName.map { URL(fileURLWithPath: $0).pathExtension } ?? "dat"
-                        savedPath = try await SecureStorageService.shared.saveEncryptedAttachment(data: dataToSave, extension: ext)
-                    } catch {
-                         print("Failed to save local attachment: \(error)")
-                    }
-                }
+                let uiMessage = ChatMessage(
+                    id: msgUUID,
+                    content: content,
+                    timestamp: now,
+                    isFromMe: true,
+                    senderName: capturedCertManager.username,
+                    isDelivered: false,
+                    isEncrypted: wasEncrypted,
+                    attachmentData: attachmentName != nil ? (attachment ?? Data()) : nil,
+                    attachmentMime: attachmentName != nil ? rawMime : nil,
+                    attachmentName: attachmentName,
+                    localAttachmentPath: savedPath
+                )
                 
-                await MainActor.run {
-                    let uiMessage = ChatMessage(
-                        id: msgUUID,
-                        content: content,
-                        timestamp: now,
-                        isFromMe: true,
-                        senderName: certificateManager.username,
-                        isDelivered: false,
-                        isEncrypted: wasEncrypted,
-                        attachmentData: attachmentName != nil ? dataToSave : nil,
-                        // Fix: Only set attachmentMime if there is an attachment (name is present).
-                        // Otherwise it's a regular text message, and keeping mime causes UI to think it's a missing file.
-                        attachmentMime: attachmentName != nil ? originalMime : nil,
-                        attachmentName: attachmentName,
-                        localAttachmentPath: savedPath
-                    )
-                    
-                    self.messages.append(uiMessage)
-                    self.saveMessages()
-                    
-                    // Add to queue
-                    let safeMsg = SafeMessage(msgDer: Data(msgDer), firstAttempt: now, id: msgUUID)
-                    self.outgoingQueue[msgUUID] = safeMsg
-                    
-                    // Initial Send
-                    Task {
-                        print("[ChatMessageStore] Sending message data (\(Data(msgDer).count) bytes) via multicast...")
-                        print("[ChatMessageStore] Sending message data (\(Data(msgDer).count) bytes) via multicast...")
-                        await multicast.send(data: Data(msgDer), address: MulticastService.CHAT_GROUP)
-                    }
-                }
+                self.messages.append(uiMessage)
+                self.saveMessages()
+                
+                // Add to queue
+                let safeMsg = SafeMessage(msgDer: msgDer, firstAttempt: now, id: msgUUID)
+                self.outgoingQueue[msgUUID] = safeMsg
             }
-        } catch {
-            print("Serialization failed: \(error)")
+        }
+
+        // Offload EVERYTHING to Detached Task (CPU Bound + I/O)
+        Task.detached(priority: .userInitiated) {
+             print("[ChatMessageStore] Preparing to send message to '\(capturedRecipientName)'...")
+             
+             // 1. Encryption (CPU)
+             var payloadData = rawPayload
+             var mimeType = rawMime
+             var wasEncrypted = false
+             
+             if !capturedRecipientName.isEmpty {
+                 // Note: accessing userStore from background is safe if it uses internal locks or actors.
+                 // ChatUserStore is MainActor, so we need to be careful.
+                 // Ideally we should have captured the specific certificate data beforehand if possible.
+                 // OR we call back to MainActor just for the lookup.
+                 
+                 let certData = await MainActor.run { capturedUserStore.getCertificateData(for: capturedRecipientName) }
+                 
+                 if let certData = certData {
+                     do {
+                         let certificate = try AuthenticationFramework_Certificate(derEncoded: ArraySlice(certData))
+                         let pubKeyBytes = Data(certificate.toBeSigned.subjectPublicKeyInfo.subjectPublicKey.bytes)
+                         let recipientPublicKey = try P256.KeyAgreement.PublicKey(x963Representation: pubKeyBytes)
+                         
+                         payloadData = try await capturedCmsService.encrypt(data: payloadData, recipientPublicKey: recipientPublicKey)
+                         mimeType = "application/cms"
+                         wasEncrypted = true
+                         print("Message encrypted with CMS for \(capturedRecipientName)")
+                     } catch {
+                         print("Encryption failed: \(error)")
+                     }
+                 }
+             }
+             
+             // 2. Construction & Signing (CPU)
+             // ID
+             var idBytes = [UInt8](repeating: 0, count: 16)
+             let _ = SecRandomCopyBytes(kSecRandomDefault, 16, &idBytes)
+             let idOctet = ASN1OctetString(contentBytes: ArraySlice(idBytes))
+             let msgUUID = UUID(uuid: (idBytes[0], idBytes[1], idBytes[2], idBytes[3], idBytes[4], idBytes[5], idBytes[6], idBytes[7], idBytes[8], idBytes[9], idBytes[10], idBytes[11], idBytes[12], idBytes[13], idBytes[14], idBytes[15]))
+             
+             let fromOctet = ASN1OctetString(contentBytes: ArraySlice(username))
+             let toOctet = ASN1OctetString(contentBytes: ArraySlice((capturedRecipientName.isEmpty ? "broadcast" : capturedRecipientName).utf8))
+             
+             // Payload Any
+             let payloadOctet = ASN1OctetString(contentBytes: ArraySlice(payloadData))
+             var serializer = DER.Serializer()
+             try! serializer.serialize(payloadOctet)
+             let payloadAny = try! ASN1Any(derEncoded: serializer.serializedBytes)
+             
+             let mimeOctet = ASN1OctetString(contentBytes: ArraySlice(mimeType.utf8))
+             let emptyOctet = ASN1OctetString(contentBytes: [])
+             
+             // Features
+             var features: [CHAT_Feature] = []
+             if let name = attachmentName {
+                  let key = ASN1OctetString(contentBytes: ArraySlice("filename".utf8))
+                  let val = ASN1OctetString(contentBytes: ArraySlice(name.utf8))
+                  features.append(CHAT_Feature(id: emptyOctet, key: key, value: val, group: emptyOctet))
+             }
+             if wasEncrypted {
+                  let key = ASN1OctetString(contentBytes: ArraySlice("original-mime".utf8))
+                  let val = ASN1OctetString(contentBytes: ArraySlice(rawMime.utf8))
+                  features.append(CHAT_Feature(id: emptyOctet, key: key, value: val, group: emptyOctet))
+             }
+             
+             let file = CHAT_FileDesc(
+                 id: idOctet,
+                 mime: mimeOctet,
+                 payload: payloadAny,
+                 parentid: emptyOctet,
+                 data: features
+             )
+             
+             // Sign
+             var seqSerializer = DER.Serializer()
+             try! seqSerializer.serializeSequenceOf([file])
+             let filesSequenceDer = seqSerializer.serializedBytes
+             var tbsData = Data(idBytes)
+             tbsData.append(Data(fromOctet.bytes))
+             tbsData.append(Data(toOctet.bytes))
+             tbsData.append(contentsOf: filesSequenceDer)
+             
+             var sigOctet = ASN1OctetString(contentBytes: [])
+             do {
+                 let signature = try privateKey.signature(for: tbsData) // Signing is CPU heavy
+                 sigOctet = ASN1OctetString(contentBytes: ArraySlice(signature.rawRepresentation))
+             } catch {
+                 print("Signing failed: \(error)")
+                 return
+             }
+             
+             // Assemble
+             let chatMsg = CHAT_Message(
+                 id: idOctet,
+                 feed_id: .p2p(CHAT_P2P(src: fromOctet, dst: toOctet)),
+                 signature: sigOctet,
+                 from: fromOctet,
+                 to: toOctet,
+                 created: createdBytes,
+                 files: [file],
+                 type: CHAT_MessageType(rawValue: 1),
+                 link: [],
+                 seenby: emptyOctet,
+                 repliedby: emptyOctet,
+                 mentioned: [],
+                 status: CHAT_MessageStatus(rawValue: 0)
+             )
+             
+             let protocolMsg = CHAT_CHATProtocol.message(chatMsg)
+             var msgSerializer = DER.Serializer()
+             try! msgSerializer.serialize(protocolMsg)
+             let msgDer = msgSerializer.serializedBytes
+             
+             // 3. Local Persistence (I/O)
+             var savedPath: String?
+             if attachmentName != nil {
+                 do {
+                     let ext = attachmentName.map { URL(fileURLWithPath: $0).pathExtension } ?? "dat"
+                     // Plaintext payload for local save if available
+                     savedPath = try await SecureStorageService.shared.saveEncryptedAttachment(data: rawPayload, extension: ext)
+                 } catch {
+                      print("Failed to save local attachment: \(error)")
+                 }
+             }
+             
+             // 4. Update UI
+             updateUI(msgUUID, wasEncrypted, savedPath, Data(msgDer))
+             
+             // 5. Send Network (I/O)
+             print("[ChatMessageStore] Sending message data (\(Data(msgDer).count) bytes) via multicast...")
+             await capturedMulticast.send(data: Data(msgDer), address: MulticastService.CHAT_GROUP)
         }
     }
     
     private func listenForMessages() {
-        Task {
-            for await data in await multicast.dataStream {
+        let capturedMulticast = multicast
+        let capturedRecipientName = recipientName
+        let capturedCertManager = certificateManager
+        let capturedCmsService = cmsService
+
+        Task.detached(priority: .userInitiated) { [weak self] in
+            print("[ChatMessageStore] Started detached listener task")
+            for await data in capturedMulticast.dataStream {
+                // print("[ChatMessageStore] Received packet of size \(data.count)")
                 do {
                     let proto = try CHAT_CHATProtocol(derEncoded: ArraySlice(data))
                     
                     // Only process messages
                     guard case .message(let msg) = proto else { return }
                     
-                    print("[ChatMessageStore] Received CHAT_Message from '\(String(decoding: msg.from.bytes, as: UTF8.self))'")
-                    
                     // --- Handle ACKs (Read Receipt) ---
                     if msg.type.rawValue == 4 { // .read
-                        // Ensure we have a valid ID in repliedby to know which message was read
                         let ackIdData = Data(msg.repliedby.bytes)
-                        
-                        // Debug log for ACK receipt
-                        print("[ChatMessageStore] Received ACK. ID Bytes: \(ackIdData.map { String(format: "%02X", $0) }.joined())")
-                        
                         if ackIdData.count >= 16 {
                             let suffix = Array(ackIdData.suffix(16))
                             let uuid = UUID(uuid: (suffix[0], suffix[1], suffix[2], suffix[3], suffix[4], suffix[5], suffix[6], suffix[7], suffix[8], suffix[9], suffix[10], suffix[11], suffix[12], suffix[13], suffix[14], suffix[15]))
                             
-                            print("[ChatMessageStore] ACK UUID: \(uuid)")
-                            
                             await MainActor.run {
-                                print("[ChatMessageStore] Queue Keys: \(self.outgoingQueue.keys.map { "\($0)" })")
+                                guard let self = self else { return }
+                                
+                                // Always attempt to mark as delivered in the UI, even if not in local queue
+                                // (e.g. if Store was recreated after sending)
+                                self.markAsDelivered(uuid)
                                 
                                 if self.outgoingQueue[uuid] != nil {
-                                    print("Received ACK for \(uuid), removing from queue.")
+                                    print("[ChatMessageStore] Removing ACK'd message \(uuid) from local queue.")
                                     self.outgoingQueue.removeValue(forKey: uuid)
-                                    self.markAsDelivered(uuid)
-                                } else {
-                                    print("[ChatMessageStore] WARNING: ACK UUID \(uuid) NOT FOUND in queue!")
                                 }
                             }
                         }
@@ -397,6 +356,19 @@ final class ChatMessageStore: ObservableObject {
                     }
                     
                     // --- Process Normal Message ---
+                    
+                    // Extract Sender
+                    let sender = String(decoding: msg.from.bytes, as: UTF8.self)
+                    
+                    // Get Identity (Thread Safe)
+                    guard let (myUsername, _, myPrivateKey) = capturedCertManager.getIdentity() else { continue }
+                    
+                    // Filter own messages
+                    if sender == myUsername { continue }
+                    
+                    // Filter Recipient
+                    let recipient = String(decoding: msg.to.bytes, as: UTF8.self)
+                    if recipient != "broadcast" && recipient != myUsername { continue }
                     
                     // Extract Content
                     guard let file = msg.files.first else { continue }
@@ -412,70 +384,46 @@ final class ChatMessageStore: ObservableObject {
                     var payloadData = Data(contentOctet.bytes)
                     var wasEncrypted = false
                     
-                    // Decrypt if CMS encrypted
+                    // Decrypt if CMS encrypted (Background)
                     var finalMime = mimeType
                     var finalFilename: String?
                     
-                    // Parse Metadata (Features)
                     for feature in file.data {
-                         let key = String(decoding: feature.key.bytes, as: UTF8.self)
-                         let val = String(decoding: feature.value.bytes, as: UTF8.self)
-                         if key == "filename" {
-                             finalFilename = val
-                         } else if key == "original-mime" {
-                             finalMime = val
-                         }
+                        let key = String(decoding: feature.key.bytes, as: UTF8.self)
+                        let val = String(decoding: feature.value.bytes, as: UTF8.self)
+                        if key == "filename" {
+                            finalFilename = val
+                        } else if key == "original-mime" {
+                            finalMime = val
+                        }
                     }
                     
                     if mimeType == "application/cms" {
                         do {
-                            // Convert signing key to key agreement key
-                            if let signingKey = await MainActor.run(body: { certificateManager.currentPrivateKey }) {
-                                // P256.Signing.PrivateKey and P256.KeyAgreement.PrivateKey share same underlying key
-                                let keyData = signingKey.rawRepresentation
-                                let decryptionKey = try P256.KeyAgreement.PrivateKey(rawRepresentation: keyData)
-                                payloadData = try await cmsService.decrypt(envelopedData: payloadData, privateKey: decryptionKey)
-                                wasEncrypted = true
-                                print("Message decrypted successfully")
-                            }
+                            let keyData = myPrivateKey.rawRepresentation
+                            let decryptionKey = try P256.KeyAgreement.PrivateKey(rawRepresentation: keyData)
+                            payloadData = try await capturedCmsService.decrypt(envelopedData: payloadData, privateKey: decryptionKey)
+                            wasEncrypted = true
                         } catch {
                             print("Decryption failed: \(error)")
-                            continue // Skip message we can't decrypt
+                            continue
                         }
                     }
                     
-                    // Fallback: If encrypted but no original-mime found (and no filename), assume text/plain
-                    // This handles legacy/buggy messages that sent nil original-mime
                     if wasEncrypted && finalMime == "application/cms" && finalFilename == nil {
                         finalMime = "text/plain"
                     }
                     
                     let text: String
                     let attachmentData: Data?
-                    
-                    // Fix: Properly distinguish between text messages and files
                     let isText = finalMime.hasPrefix("text/") && finalFilename == nil
                     
                     if isText {
-                         text = String(decoding: payloadData, as: UTF8.self)
-                         attachmentData = nil
+                        text = String(decoding: payloadData, as: UTF8.self)
+                        attachmentData = nil
                     } else {
-                         text = finalFilename != nil ? "Sent a file: \(finalFilename!)" : "Sent a file"
-                         attachmentData = payloadData
-                    }
-                    
-                    // Extract Sender
-                    let sender = String(decoding: msg.from.bytes, as: UTF8.self)
-                    
-                    // Filter own messages
-                    let myUsername = await MainActor.run { certificateManager.username }
-                    if sender == myUsername { continue }
-                    
-                    // Check if message is for us (broadcast or targeted)
-                    let recipient = String(decoding: msg.to.bytes, as: UTF8.self)
-                    if recipient != "broadcast" && recipient != myUsername {
-                        print("[ChatMessageStore] Dropping message for '\(recipient)' (my username: '\(myUsername)')")
-                        continue // Message isn't for us
+                        text = finalFilename != nil ? "Sent a file: \(finalFilename!)" : "Sent a file"
+                        attachmentData = payloadData
                     }
                     
                     // ID
@@ -488,7 +436,9 @@ final class ChatMessageStore: ObservableObject {
                         uuid = UUID()
                     }
                     
+                    // Update UI (Main Actor)
                     await MainActor.run {
+                        guard let self = self else { return }
                         let uiMessage = ChatMessage(
                             id: uuid,
                             content: text,
@@ -503,15 +453,12 @@ final class ChatMessageStore: ObservableObject {
                             attachmentName: finalFilename
                         )
                         self.receiveMessage(uiMessage)
-                        
-                        // --- Send ACK ---
-                        // Only acknowledge if it was for us
-                        // We construct a simple CHAT_Message with type .read and repliedby = msg.id
-                        self.sendAck(for: msg.id)
                     }
                     
+                    // Send ACK is now handled EXCLUSIVELY by GlobalMessageService to prevent duplicate ACKs and double CPU load.
+                    // await Self.sendAckInternal(...)
+                    
                 } catch {
-                    // Log error to debug ACK failures
                     print("[ChatMessageStore] Failed to decode packet: \(error)")
                     continue
                 }
@@ -519,6 +466,65 @@ final class ChatMessageStore: ObservableObject {
         }
     }
     
+    // Helper to send ACK from background without accessing MainActor state
+    private static func sendAckInternal(
+        originId: ASN1OctetString,
+        myUsername: String,
+        recipientName: String,
+        privateKey: P256.Signing.PrivateKey,
+        multicast: MulticastService
+    ) async {
+        // Construct ACK Message
+        var idBytes = [UInt8](repeating: 0, count: 16)
+        let _ = SecRandomCopyBytes(kSecRandomDefault, 16, &idBytes)
+        let idOctet = ASN1OctetString(contentBytes: ArraySlice(idBytes))
+        
+        let fromOctet = ASN1OctetString(contentBytes: ArraySlice(myUsername.utf8))
+        let toOctet = ASN1OctetString(contentBytes: ArraySlice((recipientName.isEmpty ? "broadcast" : recipientName).utf8))
+        let emptyOctet = ASN1OctetString(contentBytes: [])
+        
+        let dummyFile = CHAT_FileDesc(
+            id: emptyOctet,
+            mime: ASN1OctetString(contentBytes: ArraySlice("text/plain".utf8)),
+            payload: try! ASN1Any(derEncoded: [0x05, 0x00]), // NULL
+            parentid: emptyOctet,
+            data: []
+        )
+        
+        var seqSerializer = DER.Serializer()
+        try! seqSerializer.serializeSequenceOf([dummyFile])
+        let filesDer = seqSerializer.serializedBytes
+        var tbsData = Data(idBytes)
+        tbsData.append(Data(fromOctet.bytes))
+        tbsData.append(Data(toOctet.bytes))
+        tbsData.append(contentsOf: filesDer)
+        
+        guard let signature = try? privateKey.signature(for: tbsData) else { return }
+        let sigOctet = ASN1OctetString(contentBytes: ArraySlice(signature.rawRepresentation))
+        
+        let ackMsg = CHAT_Message(
+            id: idOctet,
+            feed_id: .p2p(CHAT_P2P(src: fromOctet, dst: toOctet)),
+            signature: sigOctet,
+            from: fromOctet,
+            to: toOctet,
+            created: ArraySlice(String(Int64(Date().timeIntervalSince1970 * 1000)).utf8),
+            files: [dummyFile],
+            type: CHAT_MessageType(rawValue: 4), // .read
+            link: [],
+            seenby: emptyOctet,
+            repliedby: originId,
+            mentioned: [],
+            status: CHAT_MessageStatus(rawValue: 0)
+        )
+        
+        let protocolMsg = CHAT_CHATProtocol.message(ackMsg)
+        var msgSerializer = DER.Serializer()
+        try! msgSerializer.serialize(protocolMsg)
+        
+        await multicast.send(data: Data(msgSerializer.serializedBytes), address: MulticastService.CHAT_GROUP)
+    }
+
     private func receiveMessage(_ message: ChatMessage) {
         // Deduplication: Check if message with this ID already exists
         if messages.contains(where: { $0.id == message.id }) {
@@ -531,6 +537,9 @@ final class ChatMessageStore: ObservableObject {
     
     private func markAsDelivered(_ messageId: UUID) {
         if let index = messages.firstIndex(where: { $0.id == messageId }) {
+            // Deduplication: Don't update or log if already marked
+            if messages[index].isDelivered { return }
+            
             print("[ChatMessageStore] Marking message \(messageId) as DELIVERED in UI model.")
             messages[index].isDelivered = true
             saveMessages()
@@ -539,9 +548,16 @@ final class ChatMessageStore: ObservableObject {
         }
     }
     
+    static let persistenceQueue = DispatchQueue(label: "com.chatx509.messagestore.persistence", qos: .background)
+
     private func saveMessages() {
-        if let data = try? JSONEncoder().encode(messages) {
-            UserDefaults.standard.set(data, forKey: storageKey)
+        let snapshot = self.messages
+        let key = self.storageKey
+        
+        Self.persistenceQueue.async {
+            if let data = try? JSONEncoder().encode(snapshot) {
+                UserDefaults.standard.set(data, forKey: key)
+            }
         }
     }
     
@@ -571,74 +587,50 @@ final class ChatMessageStore: ObservableObject {
             messages.append(message)
         }
         
-        // Save
-        if let data = try? JSONEncoder().encode(messages) {
-            UserDefaults.standard.set(data, forKey: storageKey)
+        // Save using the shared static queue to prevent races and Main Thread blocks
+        persistenceQueue.async {
+            // Re-load latest to ensure we append to most recent state (in case Instance wrote recently)
+            var currentMessages: [ChatMessage] = []
+            if let data = UserDefaults.standard.data(forKey: storageKey),
+               let decoded = try? JSONDecoder().decode([ChatMessage].self, from: data) {
+                 currentMessages = decoded
+            }
+            
+            // Check duplicate again in case it was added while waiting in queue
+            if !currentMessages.contains(where: { $0.id == message.id }) {
+                currentMessages.append(message)
+                
+                if let data = try? JSONEncoder().encode(currentMessages) {
+                    UserDefaults.standard.set(data, forKey: storageKey)
+                }
+            }
         }
     }
     
-    // MARK: - ACK Sending
-    private func sendAck(for originId: ASN1OctetString) {
-        Task {
-            guard let username = certificateManager.username.data(using: .utf8),
-                  let privateKey = certificateManager.currentPrivateKey else { return }
+    /// Mark a message as delivered in the static storage (called from GlobalMessageService)
+    static func markMessageAsDelivered(userId: UUID, messageId: UUID) {
+        let storageKey = "messages_\(userId.uuidString)"
+        
+        persistenceQueue.async {
+            // Load
+            guard let data = UserDefaults.standard.data(forKey: storageKey),
+                  var messages = try? JSONDecoder().decode([ChatMessage].self, from: data) else {
+                return
+            }
             
-            // Construct ACK Message
-            // ID (random)
-            var idBytes = [UInt8](repeating: 0, count: 16)
-            let _ = SecRandomCopyBytes(kSecRandomDefault, 16, &idBytes)
-            let idOctet = ASN1OctetString(contentBytes: ArraySlice(idBytes))
-            
-            let fromOctet = ASN1OctetString(contentBytes: ArraySlice(username))
-            let toOctet = ASN1OctetString(contentBytes: ArraySlice((recipientName.isEmpty ? "broadcast" : recipientName).utf8))
-            
-            let emptyOctet = ASN1OctetString(contentBytes: [])
-            
-            // Minimal file (required field)
-            let dummyFile = CHAT_FileDesc(
-                id: emptyOctet,
-                mime: ASN1OctetString(contentBytes: ArraySlice("text/plain".utf8)),
-                payload: try! ASN1Any(derEncoded: [0x05, 0x00]), // NULL
-                parentid: emptyOctet,
-                data: []
-            )
-            
-            // Sign (required)
-            // Just sign ID + From + To + Files
-             var seqSerializer = DER.Serializer()
-             try! seqSerializer.serializeSequenceOf([dummyFile])
-             let filesDer = seqSerializer.serializedBytes
-             var tbsData = Data(idBytes)
-             tbsData.append(Data(fromOctet.bytes))
-             tbsData.append(Data(toOctet.bytes))
-             tbsData.append(contentsOf: filesDer)
-             
-            let signature = try! privateKey.signature(for: tbsData)
-            let sigOctet = ASN1OctetString(contentBytes: ArraySlice(signature.rawRepresentation))
-            
-            let ackMsg = CHAT_Message(
-                id: idOctet,
-                feed_id: .p2p(CHAT_P2P(src: fromOctet, dst: toOctet)),
-                signature: sigOctet,
-                from: fromOctet,
-                to: toOctet,
-                created: ArraySlice(String(Int64(Date().timeIntervalSince1970 * 1000)).utf8),
-                files: [dummyFile],
-                type: CHAT_MessageType(rawValue: 4), // .read
-                link: [],
-                seenby: emptyOctet,
-                repliedby: originId, // Reference the received message ID
-                mentioned: [],
-                status: CHAT_MessageStatus(rawValue: 0)
-            )
-            
-            let protocolMsg = CHAT_CHATProtocol.message(ackMsg)
-            var msgSerializer = DER.Serializer()
-            try! msgSerializer.serialize(protocolMsg)
-            
-            print("[ChatMessageStore] Sending ACK for message \(originId.bytes.map { String(format: "%02X", $0) }.joined())")
-            print("[ChatMessageStore] Sending ACK for message \(originId.bytes.map { String(format: "%02X", $0) }.joined())")
-            await multicast.send(data: Data(msgSerializer.serializedBytes), address: MulticastService.CHAT_GROUP)
+            // Find & Update
+            if let index = messages.firstIndex(where: { $0.id == messageId }) {
+                // Deduplication check
+                if messages[index].isDelivered { return }
+                
+                messages[index].isDelivered = true
+                
+                // Save
+                if let encoded = try? JSONEncoder().encode(messages) {
+                    UserDefaults.standard.set(encoded, forKey: storageKey)
+                    print("[ChatMessageStore] (Static) Marked message \(messageId) as DELIVERED for user \(userId)")
+                }
+            }
         }
     }
 }
