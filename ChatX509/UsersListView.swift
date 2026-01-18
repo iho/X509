@@ -11,7 +11,7 @@ import CryptoKit
 import SwiftASN1
 
 struct UsersListView: View {
-    @StateObject private var userStore = ChatUserStore.shared
+    @ObservedObject private var userStore = ChatUserStore.shared
     @ObservedObject private var certificateManager = CertificateManager.shared
     @AppStorage("isDarkMode") private var isDarkMode = true
     @Environment(\.colorScheme) var colorScheme
@@ -66,6 +66,11 @@ struct UsersListView: View {
                     // Identity header
                     identityHeader
                     
+                    Text("Debug: \(userStore.users.count) users")
+                        .font(.caption)
+                        .foregroundColor(.red)
+
+                    
                     if userStore.users.isEmpty {
                         emptyStateView
                     } else {
@@ -88,12 +93,14 @@ struct UsersListView: View {
                     settingsMenu
                 }
             }
-            /*
             .alert("Identity Expired", isPresented: $showExpirationAlert) {
                 Button("Regenerate", role: .destructive) {
                     print("[UI] Regenerate button tapped")
                     showExpirationAlert = false
-                    CertificateManager.shared.generateNewIdentity()
+                    // Ensure we don't block
+                    Task {
+                        CertificateManager.shared.generateNewIdentity()
+                    }
                 }
                 Button("Cancel", role: .cancel) {
                     print("[UI] Cancel button tapped")
@@ -102,7 +109,6 @@ struct UsersListView: View {
             } message: {
                 Text("Your identity has expired. Other users won't be able to send you encrypted messages until you regenerate your certificate.")
             }
-            */
             .onReceive(CertificateManager.shared.$isExpired) { expired in
                 // Only update if changed to avoid view refresh cycles
                 if showExpirationAlert != expired {

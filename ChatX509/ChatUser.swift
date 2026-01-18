@@ -200,6 +200,7 @@ final class ChatUserStore: ObservableObject {
         }
         // 3. New user
         else {
+            print("[Store] Adding NEW discovered user: \(name)")
             let newUser = ChatUser(
                 name: name,
                 certificateSubject: certificateSubject,
@@ -232,7 +233,9 @@ final class ChatUserStore: ObservableObject {
         Task.detached {
             await UserDiscoveryService.shared.start(
                 onUserDiscovered: { discoveredUser in
+                    print("[Store] Callback received for: \(discoveredUser.username)")
                     Task { @MainActor in
+                        print("[Store] Dispatching to MainActor for: \(discoveredUser.username)")
                         ChatUserStore.shared.addOrUpdateDiscoveredUser(
                             name: discoveredUser.username,
                             certificateSubject: discoveredUser.certificateSubject,

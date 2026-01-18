@@ -193,18 +193,28 @@ final class UserDiscoveryService: @unchecked Sendable {
             serviceLock.unlock()
             if !running { break }
             
+            // print("[Discovery] RX \(data.count) bytes") // Uncomment for verbose stream debug
+            
             do {
                 let proto = try CHAT_CHATProtocol(derEncoded: ArraySlice(data))
                 
                 // Only process presence messages
                 guard case .presence(let presence) = proto else { continue }
                 
+                print("[Discovery] Parsed Presence from stream")
+                
                 // Parse nickname - format: username|base64(certificate)
                 let nicknameBytes = Data(presence.nickname.bytes)
-                guard let nicknameStr = String(data: nicknameBytes, encoding: .utf8) else { continue }
+                guard let nicknameStr = String(data: nicknameBytes, encoding: .utf8) else {
+                     print("[Discovery] FAIL: Nickname decode error")
+                     continue
+                }
                 
                 let parts = nicknameStr.split(separator: "|", maxSplits: 1)
-                guard parts.count == 2 else { continue }
+                guard parts.count == 2 else {
+                     print("[Discovery] FAIL: Invalid format: \(nicknameStr)")
+                     continue
+                }
                 
                 let username = String(parts[0])
                 let certBase64 = String(parts[1])
@@ -212,11 +222,33 @@ final class UserDiscoveryService: @unchecked Sendable {
                 // Skip our own announcements
                 // Note: certificateManager.username is @Published, use safely
                 if let (myUsername, _, _) = certificateManager.getIdentity(), username == myUsername {
+                    print("[Discovery] Ignoring self-announcement from '\(username)'")
                     continue
                 }
                 
+                // Optimization: Check if we already know this user and they are not stale
+                // If known and seen < 60s ago, just update timestamp and skip heavy cert parsing
+                serviceLock.lock()
+                let lastSeen = lastSeenTimes[username]
+                let isKnown = lastSeen != nil
+                serviceLock.unlock()
+                
+                if isKnown, let lastSeen = lastSeen, Date().timeIntervalSince(lastSeen) < 60.0 {
+                    // Update timestamp only
+                    serviceLock.lock()
+                    lastSeenTimes[username] = Date()
+                    serviceLock.unlock()
+                    // print("[Discovery] Known user '\(username)', skipping cert verification")
+                    continue
+                }
+
+                print("[Discovery] Processing peer (Full Verify): '\(username)'")
+                
                 // Decode certificate
-                guard let certData = Data(base64Encoded: certBase64) else { continue }
+                guard let certData = Data(base64Encoded: certBase64) else {
+                    print("[Discovery] FAIL: Base64 decode error")
+                    continue
+                }
                 
                 // Parse certificate
                 let certificate = try AuthenticationFramework_Certificate(derEncoded: ArraySlice(certData))
@@ -225,7 +257,6 @@ final class UserDiscoveryService: @unchecked Sendable {
                 // Convert to CryptoKit public key
                 let encryptionKey = try P256.KeyAgreement.PublicKey(x963Representation: publicKeyData)
                 
-                // Create discovered user
                 // Create discovered user
                 // Parse Subject (Background)
                 let details = certificateManager.extractSubjectDetails(from: certificate)
@@ -269,6 +300,7 @@ final class UserDiscoveryService: @unchecked Sendable {
                 
                 if isNewUser || isSerialChanged || !isThrottled {
                     // Notify callback
+                    print("[Discovery] Invoking callback for user: \(discoveredUser.username)")
                     callback?(discoveredUser)
                 }
                 

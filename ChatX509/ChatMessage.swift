@@ -316,214 +316,48 @@ final class ChatMessageStore: ObservableObject {
         }
     }
     
+    private var cancellables = Set<AnyCancellable>()
+    
     private func listenForMessages() {
-        let capturedMulticast = multicast
-        let capturedRecipientName = recipientName
-        let capturedCertManager = certificateManager
-        let capturedCmsService = cmsService
-
-        Task.detached(priority: .userInitiated) { [weak self] in
-            print("[ChatMessageStore] Started detached listener task")
-            for await data in capturedMulticast.dataStream {
-                // print("[ChatMessageStore] Received packet of size \(data.count)")
-                do {
-                    let proto = try CHAT_CHATProtocol(derEncoded: ArraySlice(data))
-                    
-                    // Only process messages
-                    guard case .message(let msg) = proto else { return }
-                    
-                    // --- Handle ACKs (Read Receipt) ---
-                    if msg.type.rawValue == 4 { // .read
-                        let ackIdData = Data(msg.repliedby.bytes)
-                        if ackIdData.count >= 16 {
-                            let suffix = Array(ackIdData.suffix(16))
-                            let uuid = UUID(uuid: (suffix[0], suffix[1], suffix[2], suffix[3], suffix[4], suffix[5], suffix[6], suffix[7], suffix[8], suffix[9], suffix[10], suffix[11], suffix[12], suffix[13], suffix[14], suffix[15]))
-                            
-                            await MainActor.run {
-                                guard let self = self else { return }
-                                
-                                // Always attempt to mark as delivered in the UI, even if not in local queue
-                                // (e.g. if Store was recreated after sending)
-                                self.markAsDelivered(uuid)
-                                
-                                if self.outgoingQueue[uuid] != nil {
-                                    print("[ChatMessageStore] Removing ACK'd message \(uuid) from local queue.")
-                                    self.outgoingQueue.removeValue(forKey: uuid)
-                                }
-                            }
-                        }
-                        continue
-                    }
-                    
-                    // --- Process Normal Message ---
-                    
-                    // Extract Sender
-                    let sender = String(decoding: msg.from.bytes, as: UTF8.self)
-                    
-                    // Get Identity (Thread Safe)
-                    guard let (myUsername, _, myPrivateKey) = capturedCertManager.getIdentity() else { continue }
-                    
-                    // Filter own messages
-                    if sender == myUsername { continue }
-                    
-                    // Filter Recipient
-                    let recipient = String(decoding: msg.to.bytes, as: UTF8.self)
-                    if recipient != "broadcast" && recipient != myUsername { continue }
-                    
-                    // Extract Content
-                    guard let file = msg.files.first else { continue }
-                    
-                    // Get MIME type
-                    let mimeBytes = Data(file.mime.bytes)
-                    let mimeType = String(decoding: mimeBytes, as: UTF8.self)
-                    
-                    // Extract payload
-                    var anySerializer = DER.Serializer()
-                    try anySerializer.serialize(file.payload)
-                    let contentOctet = try ASN1OctetString(derEncoded: anySerializer.serializedBytes)
-                    var payloadData = Data(contentOctet.bytes)
-                    var wasEncrypted = false
-                    
-                    // Decrypt if CMS encrypted (Background)
-                    var finalMime = mimeType
-                    var finalFilename: String?
-                    
-                    for feature in file.data {
-                        let key = String(decoding: feature.key.bytes, as: UTF8.self)
-                        let val = String(decoding: feature.value.bytes, as: UTF8.self)
-                        if key == "filename" {
-                            finalFilename = val
-                        } else if key == "original-mime" {
-                            finalMime = val
-                        }
-                    }
-                    
-                    if mimeType == "application/cms" {
-                        do {
-                            let keyData = myPrivateKey.rawRepresentation
-                            let decryptionKey = try P256.KeyAgreement.PrivateKey(rawRepresentation: keyData)
-                            payloadData = try await capturedCmsService.decrypt(envelopedData: payloadData, privateKey: decryptionKey)
-                            wasEncrypted = true
-                        } catch {
-                            print("Decryption failed: \(error)")
-                            continue
-                        }
-                    }
-                    
-                    if wasEncrypted && finalMime == "application/cms" && finalFilename == nil {
-                        finalMime = "text/plain"
-                    }
-                    
-                    let text: String
-                    let attachmentData: Data?
-                    let isText = finalMime.hasPrefix("text/") && finalFilename == nil
-                    
-                    if isText {
-                        text = String(decoding: payloadData, as: UTF8.self)
-                        attachmentData = nil
-                    } else {
-                        text = finalFilename != nil ? "Sent a file: \(finalFilename!)" : "Sent a file"
-                        attachmentData = payloadData
-                    }
-                    
-                    // ID
-                    let idData = Data(msg.id.bytes)
-                    let uuid: UUID
-                    if idData.count >= 16 {
-                        let suffix = Array(idData.suffix(16))
-                        uuid = UUID(uuid: (suffix[0], suffix[1], suffix[2], suffix[3], suffix[4], suffix[5], suffix[6], suffix[7], suffix[8], suffix[9], suffix[10], suffix[11], suffix[12], suffix[13], suffix[14], suffix[15]))
-                    } else {
-                        uuid = UUID()
-                    }
-                    
-                    // Update UI (Main Actor)
-                    await MainActor.run {
-                        guard let self = self else { return }
-                        let uiMessage = ChatMessage(
-                            id: uuid,
-                            content: text,
-                            timestamp: Date(),
-                            isFromMe: false,
-                            senderName: sender,
-                            isDelivered: true,
-                            isRead: true,
-                            isEncrypted: wasEncrypted,
-                            attachmentData: attachmentData,
-                            attachmentMime: isText ? nil : finalMime,
-                            attachmentName: finalFilename
-                        )
-                        self.receiveMessage(uiMessage)
-                    }
-                    
-                    // Send ACK is now handled EXCLUSIVELY by GlobalMessageService to prevent duplicate ACKs and double CPU load.
-                    // await Self.sendAckInternal(...)
-                    
-                } catch {
-                    print("[ChatMessageStore] Failed to decode packet: \(error)")
-                    continue
+        // Subscribe to Global Message Service (Single Source of Truth)
+        GlobalMessageService.shared.messageReceived
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] (message, senderName) in
+                guard let self = self else { return }
+                
+                // Filter: Is this message for THIS chat?
+                // Our recipient's name must match the sender (Incoming)
+                // OR we just sent it (Outgoing handled by sendMessage)
+                if senderName == self.recipientName {
+                    print("[ChatMessageStore] Received live update for \(self.recipientName)")
+                    self.receiveMessage(message)
                 }
             }
-        }
+            .store(in: &cancellables)
+            
+        // Subscribe to Global ACK Updates (Read Receipts)
+        GlobalMessageService.shared.ackReceived
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] (messageId, senderName) in
+                guard let self = self else { return }
+                
+                // If the ACK sender matches our chat recipient, update UI
+                if senderName == self.recipientName {
+                    print("[ChatMessageStore] Received live ACK for \(self.recipientName)")
+                    self.markAsDelivered(messageId)
+                    
+                    // Remove from local retry queue if present
+                    if self.outgoingQueue[messageId] != nil {
+                         self.outgoingQueue.removeValue(forKey: messageId)
+                    }
+                }
+            }
+            .store(in: &cancellables)
+            
+        print("[ChatMessageStore] Subscribed to GlobalMessageService updates for '\(recipientName)'")
     }
     
-    // Helper to send ACK from background without accessing MainActor state
-    private static func sendAckInternal(
-        originId: ASN1OctetString,
-        myUsername: String,
-        recipientName: String,
-        privateKey: P256.Signing.PrivateKey,
-        multicast: MulticastService
-    ) async {
-        // Construct ACK Message
-        var idBytes = [UInt8](repeating: 0, count: 16)
-        let _ = SecRandomCopyBytes(kSecRandomDefault, 16, &idBytes)
-        let idOctet = ASN1OctetString(contentBytes: ArraySlice(idBytes))
-        
-        let fromOctet = ASN1OctetString(contentBytes: ArraySlice(myUsername.utf8))
-        let toOctet = ASN1OctetString(contentBytes: ArraySlice((recipientName.isEmpty ? "broadcast" : recipientName).utf8))
-        let emptyOctet = ASN1OctetString(contentBytes: [])
-        
-        let dummyFile = CHAT_FileDesc(
-            id: emptyOctet,
-            mime: ASN1OctetString(contentBytes: ArraySlice("text/plain".utf8)),
-            payload: try! ASN1Any(derEncoded: [0x05, 0x00]), // NULL
-            parentid: emptyOctet,
-            data: []
-        )
-        
-        var seqSerializer = DER.Serializer()
-        try! seqSerializer.serializeSequenceOf([dummyFile])
-        let filesDer = seqSerializer.serializedBytes
-        var tbsData = Data(idBytes)
-        tbsData.append(Data(fromOctet.bytes))
-        tbsData.append(Data(toOctet.bytes))
-        tbsData.append(contentsOf: filesDer)
-        
-        guard let signature = try? privateKey.signature(for: tbsData) else { return }
-        let sigOctet = ASN1OctetString(contentBytes: ArraySlice(signature.rawRepresentation))
-        
-        let ackMsg = CHAT_Message(
-            id: idOctet,
-            feed_id: .p2p(CHAT_P2P(src: fromOctet, dst: toOctet)),
-            signature: sigOctet,
-            from: fromOctet,
-            to: toOctet,
-            created: ArraySlice(String(Int64(Date().timeIntervalSince1970 * 1000)).utf8),
-            files: [dummyFile],
-            type: CHAT_MessageType(rawValue: 4), // .read
-            link: [],
-            seenby: emptyOctet,
-            repliedby: originId,
-            mentioned: [],
-            status: CHAT_MessageStatus(rawValue: 0)
-        )
-        
-        let protocolMsg = CHAT_CHATProtocol.message(ackMsg)
-        var msgSerializer = DER.Serializer()
-        try! msgSerializer.serialize(protocolMsg)
-        
-        await multicast.send(data: Data(msgSerializer.serializedBytes), address: MulticastService.CHAT_GROUP)
-    }
+
 
     private func receiveMessage(_ message: ChatMessage) {
         // Deduplication: Check if message with this ID already exists

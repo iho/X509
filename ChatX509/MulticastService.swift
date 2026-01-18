@@ -29,8 +29,30 @@ final class MulticastService: @unchecked Sendable {
     // Stats
     private var totalBytesSent = 0
     private var totalBytesReceived = 0
+    private var selectedInterfaceIP: String? // New field
+
+    // ...
+
+    // Debug Stats
+    struct DebugStats {
+        let isRunning: Bool
+        let totalBytesSent: Int
+        let totalBytesReceived: Int
+        let pendingMessagesCount: Int
+        let selectedInterfaceIP: String? // New field
+    }
     
-    // Stream Support
+    func getDebugStats() -> DebugStats {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return DebugStats(
+            isRunning: isRunning,
+            totalBytesSent: totalBytesSent,
+            totalBytesReceived: totalBytesReceived,
+            pendingMessagesCount: pendingMessages.count,
+            selectedInterfaceIP: selectedInterfaceIP
+        )
+    }
     private var continuations: [UUID: AsyncStream<Data>.Continuation] = [:]
     
     // Send Queue
@@ -431,10 +453,23 @@ final class MulticastService: @unchecked Sendable {
             let addr = ptr.pointee.ifa_addr.pointee
             let name = String(cString: ptr.pointee.ifa_name)
             
-            if addr.sa_family == UInt8(AF_INET) && (flags & (IFF_UP|IFF_RUNNING)) == (IFF_UP|IFF_RUNNING) {
+            // Relaxed check: UP and NOT Loopback (consistent with configureOutgoingInterface)
+            let isUp = (flags & IFF_UP) == IFF_UP
+            let isLoopback = (flags & IFF_LOOPBACK) == IFF_LOOPBACK
+            
+            if addr.sa_family == UInt8(AF_INET) && isUp && !isLoopback {
                 var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
                 if getnameinfo(ptr.pointee.ifa_addr, socklen_t(addr.sa_len), &hostname, socklen_t(hostname.count), nil, 0, NI_NUMERICHOST) == 0 {
+                    // Filter out virtual/vpn interfaces which often swallow multicast
+                    if name.hasPrefix("utun") || name.hasPrefix("llw") || name.hasPrefix("awdl") {
+                        continue
+                    }
+                    
                     let ip = String(cString: hostname)
+                    
+                    // Skip 127.x explicitly if not caught by loopback flag
+                    if ip.hasPrefix("127.") { continue }
+                    
                     var mreq = ip_mreq()
                     inet_pton(AF_INET, address, &mreq.imr_multiaddr)
                     inet_pton(AF_INET, ip, &mreq.imr_interface)
@@ -443,7 +478,7 @@ final class MulticastService: @unchecked Sendable {
                     if result == 0 {
                         print("MulticastService: Joined \(address) on interface \(name) (\(ip))")
                     } else {
-                        // It's normal to fail on some interfaces (e.g. if already joined or not multicast capable)
+                        // It's normal to fail on some interfaces (already joined, etc)
                         // print("MulticastService: Failed to join \(address) on \(name) (\(ip)): \(errno)")
                     }
                 }
@@ -452,28 +487,83 @@ final class MulticastService: @unchecked Sendable {
     }
     
     private func configureOutgoingInterface(fd: Int32) {
-        // Find best interface (en0)
+        // Find best multicast-capable IPv4 interface
+        // Prioritize "en0" (WiFi), then "en1", "bridge100", etc.
+        // We look for Interface that is UP and NOT Loopback.
+        
         var ifaddr: UnsafeMutablePointer<ifaddrs>?
-        guard getifaddrs(&ifaddr) == 0, let first = ifaddr else { return }
+        guard getifaddrs(&ifaddr) == 0, let first = ifaddr else {
+            print("[Multicast] Failed to getifaddrs")
+            return
+        }
         defer { freeifaddrs(ifaddr) }
         
         var bestIP: String?
+        var foundEn0 = false
+        
+        print("[Multicast] Scanning interfaces for outgoing config...")
+        
         for ptr in sequence(first: first, next: { $0.pointee.ifa_next }) {
-            let name = String(cString: ptr.pointee.ifa_name)
+            let flags = Int32(ptr.pointee.ifa_flags)
             let addr = ptr.pointee.ifa_addr.pointee
-             if addr.sa_family == UInt8(AF_INET) && name == "en0" {
-                 var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
-                 if getnameinfo(ptr.pointee.ifa_addr, socklen_t(addr.sa_len), &hostname, socklen_t(hostname.count), nil, 0, NI_NUMERICHOST) == 0 {
-                     bestIP = String(cString: hostname)
-                 }
-             }
+            let name = String(cString: ptr.pointee.ifa_name)
+            
+            // Basic Requirement: UP and NOT Loopback
+            // (We removed strict RUNNING/MULTICAST check to be more permissive on iOS HW)
+            let isUp = (flags & IFF_UP) == IFF_UP
+            let isLoopback = (flags & IFF_LOOPBACK) == IFF_LOOPBACK
+            
+            if !isUp || isLoopback { continue }
+            
+            if addr.sa_family == UInt8(AF_INET) {
+                // Use numeric-only conversion to avoid DNS blocks
+                var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+                if getnameinfo(ptr.pointee.ifa_addr, socklen_t(addr.sa_len), &hostname, socklen_t(hostname.count), nil, 0, NI_NUMERICHOST) == 0 {
+                    let ip = String(cString: hostname)
+                    // Skip 127.x.x.x just in case
+                    if ip.hasPrefix("127.") { continue }
+                    
+                    // Filter out virtual/vpn interfaces which often swallow multicast
+                    if name.hasPrefix("utun") || name.hasPrefix("llw") || name.hasPrefix("awdl") {
+                        continue
+                    }
+                    
+                    print("[Multicast] Found candidate: \(name) - \(ip)")
+                    
+                    // Prioritize "en" (Ethernet/WiFi) interfaces
+                    // This applies to both iOS and macOS to avoid VPN tunnels
+                    if name.hasPrefix("en") {
+                        bestIP = ip
+                        foundEn0 = true // Treat any 'en' as a gold standard candidate
+                        break 
+                    }
+                    
+                    if !foundEn0 {
+                        // Keep first valid interface found as candidate
+                        if bestIP == nil { bestIP = ip }
+                    }
+                }
+            }
         }
         
         if let ip = bestIP {
             var addr = in_addr()
             inet_pton(AF_INET, ip, &addr)
-            setsockopt(fd, IPPROTO_IP, IP_MULTICAST_IF, &addr, socklen_t(MemoryLayout<in_addr>.size))
-            print("Outgoing Multicast Interface: \(ip)")
+            let result = setsockopt(fd, IPPROTO_IP, IP_MULTICAST_IF, &addr, socklen_t(MemoryLayout<in_addr>.size))
+            if result == 0 {
+                print("[Multicast] Set outgoing multicast interface to: \(ip)")
+                stateLock.lock()
+                self.selectedInterfaceIP = ip
+                stateLock.unlock()
+            } else {
+                 print("[Multicast] Failed to set outgoing interface \(ip): \(errno)")
+            }
+        } else {
+            // Explicitly default to system routing if scan failed
+            print("[Multicast] WARNING: No suitable IPv4 multicast interface found! Using system defaults.")
+            stateLock.lock()
+            self.selectedInterfaceIP = "System Default (Scan Failed)"
+            stateLock.unlock()
         }
     }
     
@@ -538,22 +628,5 @@ final class MulticastService: @unchecked Sendable {
         await UserDiscoveryService.shared.restart()
     }
     
-    // Debug Stats
-    struct DebugStats {
-        let isRunning: Bool
-        let totalBytesSent: Int
-        let totalBytesReceived: Int
-        let pendingMessagesCount: Int
-    }
-    
-    func getDebugStats() -> DebugStats {
-        stateLock.lock()
-        defer { stateLock.unlock() }
-        return DebugStats(
-            isRunning: isRunning,
-            totalBytesSent: totalBytesSent,
-            totalBytesReceived: totalBytesReceived,
-            pendingMessagesCount: pendingMessages.count
-        )
-    }
+
 }

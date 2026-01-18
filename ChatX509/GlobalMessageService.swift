@@ -30,6 +30,14 @@ final class GlobalMessageService: @unchecked Sendable {
     private let certificateManager = CertificateManager.shared
     private let cmsService = CMSService.shared
     
+    // Broadcast incoming messages to UI observers (e.g., ChatMessageStore)
+    // Payload: (ChatMessage Object, Sender's Username)
+    public let messageReceived = PassthroughSubject<(ChatMessage, String), Never>()
+    
+    // Broadcast incoming ACKs (Read Receipts)
+    // Payload: (Message UUID, Sender's Username)
+    public let ackReceived = PassthroughSubject<(UUID, String), Never>()
+    
     private init() {}
     
     /// Start listening for messages globally
@@ -260,6 +268,9 @@ final class GlobalMessageService: @unchecked Sendable {
                 // The message is stored under "messages_BobID".
                 // So finding Bob's ID is correct.
                 ChatMessageStore.markMessageAsDelivered(userId: userId, messageId: msgId)
+                
+                // Broadcast for UI updates
+                ackReceived.send((msgId, sender))
             }
             
             // 2. Remove from Re-send Queue
@@ -323,8 +334,21 @@ final class GlobalMessageService: @unchecked Sendable {
         try! msgSerializer.serialize(protocolMsg)
         let data = Data(msgSerializer.serializedBytes)
         
-        // Add to Send Queue (via MessageSenderService)
-        await MessageSenderService.shared.enqueue(data: data, type: .ack, relatedId: originalMsgId)
+        // Send ACK Burst (Immediate + Follow-up for 1 minute)
+        Task.detached {
+            for i in 0..<12 { // 5 rapid + 7 slow = ~60s coverage
+                await MessageSenderService.shared.enqueue(data: data, type: .ack, relatedId: originalMsgId)
+                
+                if i < 5 {
+                     // First 5 ACKs: Rapid (200ms spacing)
+                     try? await Task.sleep(nanoseconds: 200_000_000)
+                } else {
+                     // Next 7 ACKs: Slow (10 seconds spacing)
+                     // "continue for one minute"
+                     try? await Task.sleep(nanoseconds: 10_000_000_000)
+                }
+            }
+        }
     }
     
     @MainActor
@@ -398,6 +422,10 @@ final class GlobalMessageService: @unchecked Sendable {
             attachmentName: attachmentName,
             localAttachmentPath: nil
         )
+        
+        // Broadcast for UI updates (e.g. ChatMessageStore will listen to this)
+        messageReceived.send((chatMessage, sender))
+        
         ChatMessageStore.saveMessageToChat(userId: user.id, message: chatMessage)
     }
     

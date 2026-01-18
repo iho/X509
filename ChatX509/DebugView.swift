@@ -20,6 +20,11 @@ struct DebugView: View {
                 Section(header: Text("Multicast Diagnostic")) {
                     if let stats = stats {
                         statRow(label: "Status", value: stats.isRunning ? "Running" : "Stopped", color: stats.isRunning ? .green : .red)
+                        if let ip = stats.selectedInterfaceIP {
+                            statRow(label: "Outgoing Interface", value: ip)
+                        } else {
+                            statRow(label: "Outgoing Interface", value: "Scanning...", color: .orange)
+                        }
                     } else {
                         Text("Loading stats...")
                     }

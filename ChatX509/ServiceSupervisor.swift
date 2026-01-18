@@ -14,29 +14,43 @@ final class ServiceSupervisor: @unchecked Sendable {
     
     private init() {}
     
-    /// Restart all network services in the correct order
-    /// 1. MulticastService (Low level transport)
-    /// 2. GlobalMessageService (Message listener)
-    /// 3. UserDiscoveryService (Presence/Announcement)
-    func restartAllServices() async {
-        // Run on background thread to prevent Main Thread blocking
-        // during synchronous socket operations in MulticastService.
+    /// Start all services (Foreground)
+    func startAllServices() async {
         await Task.detached {
-            print("[Supervisor] Restarting all services...")
+            print("[Supervisor] Starting all services...")
             
-            // 1. Restart Transport Layer
-            await MulticastService.shared.restart()
+            // 1. Start Transport
+            MulticastService.shared.start()
             
-            // 2. Restart Message Listener
-            await GlobalMessageService.shared.restart()
+            // 2. Start Message Listener
+            GlobalMessageService.shared.start()
             
-            // 3. Restart Discovery (Announce new identity)
-            await UserDiscoveryService.shared.restart()
+            // 3. Start Discovery
+            // (Note: Discovery starts internally via start() calls if configured, 
+            // but we can explicitly trigger announce if needed)
+            await UserDiscoveryService.shared.announceNow()
             
-            // 4. Restart Message Sender (Reliable Delivery)
-            await MessageSenderService.shared.restart()
+            // 4. Start Sender
+            MessageSenderService.shared.start()
             
-            print("[Supervisor] All services restarted.")
+            print("[Supervisor] All services started.")
         }.value
+    }
+    
+    /// Stop all services (Background)
+    func stopAllServices() {
+        print("[Supervisor] Stopping all services...")
+        MessageSenderService.shared.stop()
+        GlobalMessageService.shared.stop()
+        UserDiscoveryService.shared.stop()
+        MulticastService.shared.stop()
+        print("[Supervisor] All services stopped.")
+    }
+    
+    /// Restart (e.g. Identity Changed)
+    func restartAllServices() async {
+        stopAllServices()
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        await startAllServices()
     }
 }

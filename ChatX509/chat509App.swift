@@ -38,13 +38,20 @@ struct chat509App: App {
                 .preferredColorScheme(isDarkMode ? .dark : .light)
                 .onChange(of: scenePhase) { newPhase in
                     if newPhase == .background {
+                        // Cleanly stop all networking services
+                        ServiceSupervisor.shared.stopAllServices()
+                        
                         // Start background task
                         backgroundTaskID = UIApplication.shared.beginBackgroundTask(withName: "FinishNetworkParams") {
-                             // Expiration handler
                              UIApplication.shared.endBackgroundTask(backgroundTaskID)
                              backgroundTaskID = .invalid
                         }
                     } else if newPhase == .active {
+                        // Cleanly restart services with fresh sockets
+                        Task {
+                             await ServiceSupervisor.shared.startAllServices()
+                        }
+                        
                         // End background task if any
                         if backgroundTaskID != .invalid {
                             UIApplication.shared.endBackgroundTask(backgroundTaskID)
