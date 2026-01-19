@@ -9,6 +9,7 @@ import Foundation
 import CryptoKit
 import SwiftASN1
 import Combine
+import Security
 
 
 // MARK: - Import Errors
@@ -92,19 +93,27 @@ final class CertificateManager: ObservableObject {
         self.locked_isImportedKey = loadedIsImported
         
         // Attempt to load existing identity
-        if let savedBundle = UserDefaults.standard.data(forKey: identityKey) {
-            print("Found saved identity, loading...")
-            if !loadIdentity(from: savedBundle) {
-                print("Failed to load saved identity, generating new one...")
-                if !loadedUsername.isEmpty {
-                    generateNewIdentity()
-                }
+        // Attempt to load existing identity (Check UserDefaults for migration first)
+        if let legacyBundle = UserDefaults.standard.data(forKey: identityKey) {
+            print("Found legacy identity in UserDefaults, migrating to Keychain...")
+            if (try? importIdentity(legacyBundle)) == true { // Re-import handles saving to Keychain
+                print("Migration successful. Removing legacy data.")
+                UserDefaults.standard.removeObject(forKey: identityKey)
             } else {
-                // Identity loaded
+                print("Migration failed. Keeping legacy data.")
             }
-        } else if !loadedUsername.isEmpty {
-            // No identity but username exists, generate new
-            generateNewIdentity()
+        } else if let keychainBundle = KeychainHelper.load() {
+             // Load from Keychain
+             print("Found identity in Keychain, loading...")
+             if !loadIdentity(from: keychainBundle) {
+                 print("Failed to load Keychain identity.")
+             }
+        }
+        
+        if !isEnrolled && !loadedUsername.isEmpty {
+             // No identity but username exists? Generate new if needed
+             // But usually we should have found one.
+             generateNewIdentity()
         }
         
         startExpirationCheck()
@@ -314,9 +323,12 @@ final class CertificateManager: ObservableObject {
     
     private func saveIdentity() {
         if let bundle = exportIdentity() {
-            UserDefaults.standard.set(bundle, forKey: identityKey)
+            if KeychainHelper.save(data: bundle) {
+                print("Identity saved to Keychain")
+            } else {
+                print("Failed to save identity to Keychain")
+            }
             UserDefaults.standard.set(isImportedKey, forKey: isImportedKeyKey)
-            print("Identity and state saved to persistence")
         }
     }
     
@@ -483,10 +495,11 @@ final class CertificateManager: ObservableObject {
             self.isExpired = false
         }
         
-        // Clear from UserDefaults
+        // Clear from Persistence
         UserDefaults.standard.removeObject(forKey: usernameKey)
-        UserDefaults.standard.removeObject(forKey: identityKey)
+        UserDefaults.standard.removeObject(forKey: identityKey) // Cleanup legacy if exists
         UserDefaults.standard.set(false, forKey: isImportedKeyKey)
+        KeychainHelper.delete()
         
         print("Identity and persistence cleared")
         
@@ -614,6 +627,65 @@ final class CertificateManager: ObservableObject {
         }
     }
     
+    // MARK: - Keychain Helper
+    
+    private struct KeychainHelper {
+        static let service = "com.chatx509.identity"
+        static let account = "current_identity"
+        
+        static func save(data: Data) -> Bool {
+            let query: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: service,
+                kSecAttrAccount as String: account,
+                kSecValueData as String: data,
+                kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock // Secure, but accessible when app is running
+            ]
+            
+            // Delete existing item first
+            SecItemDelete(query as CFDictionary)
+            
+            let status = SecItemAdd(query as CFDictionary, nil)
+            if status == errSecSuccess {
+                return true
+            } else {
+                print("[Keychain] Save failed: \(status)")
+                return false
+            }
+        }
+        
+        static func load() -> Data? {
+            let query: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: service,
+                kSecAttrAccount as String: account,
+                kSecReturnData as String: true,
+                kSecMatchLimit as String: kSecMatchLimitOne
+            ]
+            
+            var item: CFTypeRef?
+            let status = SecItemCopyMatching(query as CFDictionary, &item)
+            
+            if status == errSecSuccess, let data = item as? Data {
+                return data
+            } else {
+                if status != errSecItemNotFound {
+                    print("[Keychain] Load failed: \(status)")
+                }
+                return nil
+            }
+        }
+        
+        static func delete() {
+            let query: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: service,
+                kSecAttrAccount as String: account
+            ]
+            SecItemDelete(query as CFDictionary)
+        }
+    }
+
     private func makeGeneralizedTime(_ date: Date) throws -> GeneralizedTime {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyyMMddHHmmss'Z'"
@@ -631,3 +703,4 @@ final class CertificateManager: ObservableObject {
         return try GeneralizedTime(derEncoded: ArraySlice(der))
     }
 }
+

@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import AVFoundation
 
 struct DebugView: View {
     @Environment(\.dismiss) var dismiss
@@ -54,6 +55,30 @@ struct DebugView: View {
                          fetchStats()
                      }
                 }
+                
+                Section(header: Text("Recovery")) {
+                    Button(action: {
+                        CertificateManager.shared.generateNewIdentity()
+                    }) {
+                        Label("Force Regenerate Identity", systemImage: "arrow.clockwise.circle")
+                    }
+                    
+                    Button(role: .destructive, action: {
+                         CertificateManager.shared.clearIdentity()
+                         dismiss() // Close debug view as we are resetting everything
+                    }) {
+                        Label("Reset / Clear Identity", systemImage: "trash")
+                            .foregroundColor(.red)
+                    }
+                }
+                
+                Section(header: Text("Permissions")) {
+                    Button(action: {
+                        requestPermissions()
+                    }) {
+                        Label("Request All Permissions", systemImage: "hand.raised.fill")
+                    }
+                }
             }
             .navigationTitle("Developer Tools")
             .navigationBarTitleDisplayMode(.inline)
@@ -84,6 +109,22 @@ struct DebugView: View {
             await MainActor.run {
                 self.stats = s
             }
+        }
+    }
+    
+    private func requestPermissions() {
+        // Microphone
+        AVAudioSession.sharedInstance().requestRecordPermission { granted in
+            print("[Debug] Microphone permission: \(granted)")
+        }
+        
+        // Local Network
+        // To trigger the prompt, we simply need to restart the multicast service
+        Task {
+            print("[Debug] Triggering Local Network prompt...")
+            await MulticastService.shared.stop()
+            try? await Task.sleep(nanoseconds: 500_000_000) // 0.5s pause
+            await MulticastService.shared.start()
         }
     }
     

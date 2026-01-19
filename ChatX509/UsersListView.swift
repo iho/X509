@@ -18,6 +18,7 @@ struct UsersListView: View {
     @State private var activeSheet: ActiveSheet?
     @State private var selectedUser: ChatUser?
     @State private var showKeyExporter = false
+    @State private var showKeyImporter = false
     @State private var exportKeyData: Data?
     @State private var keyOperationMessage: String?
     @State private var showOwnCertificate = false
@@ -159,6 +160,28 @@ struct UsersListView: View {
         .compatToolbarBackground(.ultraThinMaterial, for: .windowToolbar)
         #endif
         .searchable(text: $searchText, placement: .automatic, prompt: "Search users or organizations")
+        .fileImporter(
+            isPresented: $showKeyImporter,
+            allowedContentTypes: [.data],
+            allowsMultipleSelection: false
+        ) { result in
+            handleKeyImport(result)
+        }
+        .fullScreenCover(isPresented: .init(
+            get: { certificateManager.isEnrolled && certificateManager.currentPrivateKey == nil },
+            set: { _ in }
+        )) {
+            MissingIdentityView(
+                onRegenerate: {
+                    Task {
+                        certificateManager.generateNewIdentity()
+                    }
+                },
+                onImport: {
+                    showKeyImporter = true
+                }
+            )
+        }
     }
     
     // MARK: - Identity Header
@@ -815,5 +838,87 @@ struct OwnCertificateSheet: View {
         formatter.dateStyle = .medium
         formatter.timeStyle = .short
         return formatter.string(from: date)
+    }
+}
+
+// MARK: - Missing Identity View
+struct MissingIdentityView: View {
+    let onRegenerate: () -> Void
+    let onImport: () -> Void
+    @Environment(\.colorScheme) var colorScheme
+    
+    var body: some View {
+        ZStack {
+            if colorScheme == .dark {
+                Color(red: 0.05, green: 0.05, blue: 0.12).ignoresSafeArea()
+            } else {
+                Color(white: 0.95).ignoresSafeArea()
+            }
+            
+            VStack(spacing: 30) {
+                Spacer()
+                
+                // Icon
+                ZStack {
+                    Circle()
+                        .fill(Color.orange.opacity(0.1))
+                        .frame(width: 100, height: 100)
+                    
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 48))
+                        .foregroundColor(.orange)
+                }
+                
+                // Text
+                VStack(spacing: 12) {
+                    Text("Private Key Missing")
+                        .font(.title2.bold())
+                        .foregroundColor(.primary)
+                    
+                    Text("Your secure identity is incomplete. You cannot decrypt or sign messages.")
+                        .font(.body)
+                        .foregroundColor(.gray)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal)
+                    
+                    Text("Please restore your identity to continue.")
+                        .font(.subheadline)
+                        .foregroundColor(.gray)
+                }
+                
+                Spacer()
+                
+                // Actions
+                VStack(spacing: 16) {
+                    Button(action: onRegenerate) {
+                        HStack {
+                            Image(systemName: "arrow.clockwise.circle.fill")
+                            Text("Regenerate Identity")
+                        }
+                        .font(.headline)
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 16)
+                        .background(Color.blue)
+                        .clipShape(RoundedRectangle(cornerRadius: 16))
+                    }
+                    
+                    Button(action: onImport) {
+                        HStack {
+                            Image(systemName: "square.and.arrow.down")
+                            Text("Import Backup...")
+                        }
+                        .font(.headline)
+                        .foregroundColor(.primary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 16)
+                        .background(colorScheme == .dark ? Color.white.opacity(0.1) : Color.black.opacity(0.05))
+                        .clipShape(RoundedRectangle(cornerRadius: 16))
+                    }
+                }
+                .padding(.horizontal, 24)
+                .padding(.bottom, 20)
+            }
+        }
     }
 }
